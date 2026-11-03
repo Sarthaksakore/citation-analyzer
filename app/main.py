@@ -420,20 +420,13 @@ async def analyze_researcher(
             detail=f"Citation retrieval failed: {exc}",
         )
 
+    warning = None
     if not publications:
-        return JSONResponse(
-            {
-                "researcher": researcher_dict,
-                "warning": "No publications found for this researcher ID.",
-                "publications_processed": 0,
-                "dedup_summary": {},
-                "statistics": {},
-                "citations": [],
-                "google_scholar": google_scholar,
-                "pipeline_errors": errors,
-            },
-            status_code=200,
+        warning = (
+            "No publications were returned by the publication provider. "
+            "Citations from other available providers are still included."
         )
+        errors.append("Publication provider returned no publications; continuing with available citation sources.")
 
     # ── Layer 3: deduplicate ──────────────────────────────────────────────
     try:
@@ -518,6 +511,7 @@ async def analyze_researcher(
 
     return {
         "researcher": researcher_dict,
+        "warning": warning,
         "publications_processed": len(publications),
         "raw_citation_count": len(raw_records),
         "dedup_summary": overlap,
