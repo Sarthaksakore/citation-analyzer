@@ -24,6 +24,14 @@ export function DashboardOverview({
   const incompleteProviders = Object.entries(providerStatus)
     .filter(([, status]) => status?.status && status.status !== 'complete')
   const dataIncomplete = incompleteProviders.length > 0
+  const providerLabel = {
+    openalex: 'OpenAlex',
+    openalex_citations: 'OpenAlex citations',
+    semantic_scholar: 'Semantic Scholar',
+    opencitations: 'OpenCitations',
+    institutional_sources: 'Institutional sources',
+    google_scholar: 'Google Scholar',
+  }
 
   // Citations classification stats
   const totalDeduped = statistics?.deduplicated_count ?? citations.length
@@ -125,10 +133,13 @@ export function DashboardOverview({
             }}
           >
             <strong>Data completeness warning</strong>
+            <div style={{ marginTop: '0.35rem', color: '#fef3c7' }}>
+              {incompleteProviders.length} provider{incompleteProviders.length === 1 ? '' : 's'} returned partial or unavailable data. Results below are provisional.
+            </div>
             <ul style={{ margin: '0.45rem 0 0 1.1rem' }}>
               {incompleteProviders.map(([provider, status]) => (
                 <li key={provider}>
-                  {provider}: {status.note || 'some records could not be fetched or completeness could not be confirmed'}
+                  {providerLabel[provider] || provider}: {status.note || 'some records could not be fetched or completeness could not be confirmed'}
                   {status.fetch?.clusters_failed > 0 && ` (${status.fetch.clusters_failed} citation groups failed)`}
                 </li>
               ))}
@@ -143,13 +154,13 @@ export function DashboardOverview({
       {/* Primary KPI Metrics */}
       <div className="metrics-grid">
         <div className="metric-card">
-          <div className="metric-label">Analyzer Citations Retrieved</div>
+          <div className="metric-label">Fetched Citation Records</div>
           <div className="metric-value">{rawCount}</div>
           <div className="metric-sub">Across analyzed publications and supported sources</div>
         </div>
 
         <div className="metric-card">
-          <div className="metric-label">Unique Analyzer Citations</div>
+          <div className="metric-label">Unique Citation Records</div>
           <div className="metric-value">{totalDeduped}</div>
           <div className="metric-sub">
             <strong style={{ color: '#86efac' }}>{dupesRemoved} duplicates removed</strong> ({dedupPercent}%)
@@ -172,7 +183,7 @@ export function DashboardOverview({
         </div>
 
         <div className="metric-card sky">
-          <div className="metric-label">{dataIncomplete ? 'Provisional External Citations' : 'External Citations'}</div>
+          <div className="metric-label">{dataIncomplete ? 'Provisional External Matches' : 'External Citations'}</div>
           <div className="metric-value" style={{ color: 'var(--color-external)' }}>{externalCount}</div>
           <div className="metric-sub">{dataIncomplete ? 'Not a complete peer-impact measure' : `${extPct}% genuine peer impact`}</div>
         </div>
@@ -266,6 +277,7 @@ export function DashboardOverview({
             </div>
 
             <div className="chart-legend">
+              <div className="chart-note">Classification of fetched, deduplicated records</div>
               <div className="legend-item">
                 <div className="legend-left">
                   <span className="legend-color self" />

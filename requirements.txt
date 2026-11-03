@@ -13,5 +13,5 @@ aiohttp
 httpx
 pytest
 pytest-asyncio
-
+bcrypt
 

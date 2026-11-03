@@ -16,25 +16,32 @@ async function request(endpoint, options = {}) {
       ...options.headers,
     },
     ...options,
+    credentials: 'include',
+  }
+
+  const parseResponse = async (res) => {
+    const data = await res.json().catch(() => ({ detail: res.statusText }))
+    if (!res.ok) {
+      throw new Error(data.detail || `Request failed with status ${res.status}`)
+    }
+    return data
   }
 
   try {
     const res = await fetch(url, config)
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({ detail: res.statusText }))
-      throw new Error(errData.detail || `Request failed with status ${res.status}`)
+    // Static previews and deployments may not provide the Vite /api proxy.
+    // A proxy 404 is therefore eligible for the same direct-backend fallback
+    // as a network failure.
+    if (API_BASE !== DIRECT_BACKEND && (res.status === 404 || res.status === 502)) {
+      const directRes = await fetch(directUrl, config)
+      return await parseResponse(directRes)
     }
-    return await res.json()
+    return await parseResponse(res)
   } catch (err) {
-    // If proxy failed or relative path rejected, try direct backend fallback
     if (API_BASE !== DIRECT_BACKEND && err.message?.includes('Failed to fetch')) {
       try {
         const directRes = await fetch(directUrl, config)
-        if (!directRes.ok) {
-          const errData = await directRes.json().catch(() => ({ detail: directRes.statusText }))
-          throw new Error(errData.detail || `Request failed with status ${directRes.status}`)
-        }
-        return await directRes.json()
+        return await parseResponse(directRes)
       } catch (fallbackErr) {
         throw new Error(`Backend connection error: ${fallbackErr.message || fallbackErr}`)
       }
@@ -46,6 +53,16 @@ async function request(endpoint, options = {}) {
 export const api = {
   // Meta
   checkHealth: () => request('/health'),
+  getCurrentUser: () => request('/auth/me'),
+  register: (payload) => request('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
+  login: (payload) => request('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
+  logout: () => request('/auth/logout', { method: 'POST' }),
 
   // Stored researchers
   getResearchers: () => request('/researchers'),

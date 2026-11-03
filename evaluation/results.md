@@ -3,6 +3,23 @@
 **Gold standard**: `gold_standard.csv`  
 **Target researcher**: Lokman I. Meho  
 
+## Data quality
+
+| Rows | 5 |
+| Missing titles | 0 |
+| Missing authors | 0 |
+| Missing DOIs | 1 |
+| Missing years | 0 |
+| Exact duplicate rows | 0 |
+| Mixed-label duplicate groups | 0 |
+| Classification counts | {'EXTERNAL': 1, 'SELF': 4, 'UNRESOLVED': 0} |
+| Production-ready | NO |
+
+> **Warnings**
+> - Gold set has fewer than 30 rows; metrics are directional only.
+> - Each classification needs at least 5 reviewed rows for a production gate.
+> - 1 row(s) have no DOI; identity matching is less reliable.
+
 ---
 
 ## 1. Deduplication
@@ -10,12 +27,12 @@
 | Metric | Value |
 |--------|-------|
 | Precision | 1.0000 |
-| Recall    | 0.5000 |
-| F1 Score  | 0.6667 |
-| TP / FP / FN / TN | 1 / 0 / 1 / 8 |
+| Recall    | 1.0000 |
+| F1 Score  | 1.0000 |
+| TP / FP / FN / TN | 2 / 0 / 0 / 8 |
 | Raw records | 5 |
-| After dedup | 4 |
-| Duplicates removed | 1 |
+| After dedup | 3 |
+| Duplicates removed | 2 |
 
 ---
 
@@ -23,17 +40,17 @@
 
 | Metric | Value |
 |--------|-------|
-| Precision (macro) | 0.1667 |
-| Recall (macro)    | 0.3333 |
-| F1 Score (macro)  | 0.2222 |
-| Accuracy          | 0.2000 |
+| Precision (macro) | 0.6667 |
+| Recall (macro)    | 0.6667 |
+| F1 Score (macro)  | 0.6667 |
+| Accuracy          | 1.0000 |
 | Support           | 5 rows matched |
 
 ### Confusion Matrix
 
 | True \ Pred | SELF | EXTERNAL | UNRESOLVED |
 |---|---|---|---|
-| **SELF** | 0 | 1 | 3 |
+| **SELF** | 4 | 0 | 0 |
 | **EXTERNAL** | 0 | 1 | 0 |
 | **UNRESOLVED** | 0 | 0 | 0 |
 
@@ -42,13 +59,13 @@
 ```
               precision    recall  f1-score   support
 
-        SELF       0.00      0.00      0.00         4
-    EXTERNAL       0.50      1.00      0.67         1
+        SELF       1.00      1.00      1.00         4
+    EXTERNAL       1.00      1.00      1.00         1
   UNRESOLVED       0.00      0.00      0.00         0
 
-    accuracy                           0.20         5
-   macro avg       0.17      0.33      0.22         5
-weighted avg       0.10      0.20      0.13         5
+    accuracy                           1.00         5
+   macro avg       0.67      0.67      0.67         5
+weighted avg       1.00      1.00      1.00         5
 
 ```
 

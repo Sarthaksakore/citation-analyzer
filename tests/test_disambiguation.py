@@ -200,6 +200,13 @@ class TestNameOnlyMatch:
         assert result["confidence"] == CONFIDENCE["name_only"]
         assert result["level"] == "name_only"
 
+    def test_verified_distinctive_name_with_orcid_is_self(self, researcher, paper_base):
+        researcher = {**researcher, "display_name": "Lokman I. Meho"}
+        paper = {**paper_base, "authors": ["Lokman I. Meho"]}
+        result = resolve_author_identity("Lokman I. Meho", paper, researcher)
+        assert result["level"] == "verified_name"
+        assert result["confidence"] == 0.75
+
     def test_name_only_flags_needs_review(self, researcher, paper_base):
         """Common name with no corroboration must be flagged for review."""
         result = resolve_author_identity("Alice Smith", paper_base, researcher)

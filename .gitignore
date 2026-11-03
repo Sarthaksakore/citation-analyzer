@@ -39,6 +39,7 @@ htmlcov/
 frontend/node_modules/
 frontend/.next/
 frontend/dist/
+frontend/.tsupgrader/
 
 # Logs
 *.log

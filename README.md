@@ -103,3 +103,16 @@ This avoids repeating identical requests when a profile is reloaded or a
 cached result is viewed. Configure the TTL and cache size with
 `API_CACHE_TTL_SECONDS`, `API_CACHE_MAX_ENTRIES`, and
 `SCHOLAR_CACHE_TTL_SECONDS`.
+
+The evaluation command also audits the gold-standard data before calculating
+metrics. It reports small-sample warnings, missing DOI/author/year metadata,
+duplicate rows, mixed labels within duplicate groups, and unsupported labels.
+Metrics from the current five-row fixture are directional only; use a larger,
+representative, independently reviewed gold set for release-quality claims.
+Use `python evaluation/evaluate.py --strict-quality` in CI to fail a release
+when the gold set has fewer than 30 rows, lacks at least five examples of any
+classification, or contains incomplete/invalid records.
+
+For production deployment, set `APP_ENV=production`,
+`AUTH_COOKIE_SECURE=true`, a unique `INTEGRITY_SECRET`, explicit trusted
+`ALLOWED_ORIGINS`, and a shared production database such as PostgreSQL.

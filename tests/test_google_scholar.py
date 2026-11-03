@@ -1,6 +1,12 @@
 from app import google_scholar
 
 
+def test_quota_error_is_detected():
+    assert google_scholar._is_quota_error("Your account has run out of searches")
+    assert google_scholar._is_quota_error("search quota exhausted")
+    assert not google_scholar._is_quota_error("temporary upstream failure")
+
+
 def test_fetch_all_results_consumes_every_page(monkeypatch):
     calls = []
 

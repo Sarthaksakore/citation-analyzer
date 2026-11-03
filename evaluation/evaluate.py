@@ -83,6 +83,10 @@ REQUIRED_GOLD_COLUMNS = {
     "true_duplicate_group_id",
     "true_classification",
 }
+VALID_SOURCES = {"openalex", "crossref", "semantic_scholar", "opencitations", "google_scholar"}
+VALID_CLASSES = {"SELF", "EXTERNAL", "UNRESOLVED"}
+MIN_PRODUCTION_ROWS = 30
+MIN_PRODUCTION_ROWS_PER_CLASS = 5
 
 
 def load_gold(gold_path: Path) -> pd.DataFrame:
@@ -109,6 +113,70 @@ def load_gold(gold_path: Path) -> pd.DataFrame:
     # Row index for traceability
     df["_row_id"] = [f"row_{i}" for i in range(len(df))]
     return df
+
+
+def assess_gold_quality(df: pd.DataFrame) -> Dict[str, Any]:
+    """Assess whether the gold set is sufficiently complete for trustworthy metrics."""
+    missing_titles = int((df["title"] == "").sum())
+    missing_authors = int((df["authors"] == "").sum())
+    missing_dois = int((df["doi"] == "").sum())
+    missing_years = int((df["year"] == 0).sum())
+    invalid_sources = sorted(set(df["source"]) - VALID_SOURCES)
+    invalid_classes = sorted(set(df["true_classification"]) - VALID_CLASSES)
+    duplicate_row_keys = int(df.duplicated(
+        subset=["title", "authors", "year", "doi", "source"],
+        keep=False,
+    ).sum())
+    groups = df.groupby("true_duplicate_group_id", dropna=False)
+    mixed_group_labels = int(sum(group["true_classification"].nunique() > 1 for _, group in groups))
+    class_counts = {
+        label: int((df["true_classification"] == label).sum())
+        for label in sorted(VALID_CLASSES)
+    }
+    warnings = []
+    if len(df) < 30:
+        warnings.append("Gold set has fewer than 30 rows; metrics are directional only.")
+    if any(class_counts[label] < MIN_PRODUCTION_ROWS_PER_CLASS for label in VALID_CLASSES):
+        warnings.append(
+            "Each classification needs at least "
+            f"{MIN_PRODUCTION_ROWS_PER_CLASS} reviewed rows for a production gate."
+        )
+    if missing_authors:
+        warnings.append(f"{missing_authors} row(s) have no author metadata.")
+    if missing_dois:
+        warnings.append(f"{missing_dois} row(s) have no DOI; identity matching is less reliable.")
+    if missing_years:
+        warnings.append(f"{missing_years} row(s) have no publication year.")
+    if duplicate_row_keys:
+        warnings.append(f"{duplicate_row_keys} exact duplicate row(s) are present.")
+    if mixed_group_labels:
+        warnings.append(f"{mixed_group_labels} duplicate group(s) contain mixed classification labels.")
+    if invalid_sources:
+        warnings.append(f"Unsupported source values: {', '.join(invalid_sources)}.")
+    if invalid_classes:
+        warnings.append(f"Unsupported classification values: {', '.join(invalid_classes)}.")
+    return {
+        "row_count": len(df),
+        "missing_titles": missing_titles,
+        "missing_authors": missing_authors,
+        "missing_dois": missing_dois,
+        "missing_years": missing_years,
+        "duplicate_rows": duplicate_row_keys,
+        "mixed_group_labels": mixed_group_labels,
+        "class_counts": class_counts,
+        "warnings": warnings,
+        "usable": not invalid_sources and not invalid_classes and not missing_titles,
+        "production_ready": (
+            len(df) >= MIN_PRODUCTION_ROWS
+            and all(count >= MIN_PRODUCTION_ROWS_PER_CLASS for count in class_counts.values())
+            and not invalid_sources
+            and not invalid_classes
+            and missing_titles == 0
+            and missing_authors == 0
+            and missing_years == 0
+            and mixed_group_labels == 0
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +415,7 @@ def _cm_to_markdown(cm: List[List[int]], labels: List[str]) -> str:
 
 def build_report(
     gold_path: Path,
+    quality: Dict[str, Any],
     dedup_result: Dict,
     cls_result: Dict,
     researcher_name: str,
@@ -358,6 +427,22 @@ def build_report(
         f"**Gold standard**: `{gold_path.name}`  ",
         f"**Target researcher**: {researcher_name}  ",
         "",
+        "## Data quality",
+        "",
+        f"| Rows | {quality['row_count']} |",
+        f"| Missing titles | {quality['missing_titles']} |",
+        f"| Missing authors | {quality['missing_authors']} |",
+        f"| Missing DOIs | {quality['missing_dois']} |",
+        f"| Missing years | {quality['missing_years']} |",
+        f"| Exact duplicate rows | {quality['duplicate_rows']} |",
+        f"| Mixed-label duplicate groups | {quality['mixed_group_labels']} |",
+        f"| Classification counts | {quality['class_counts']} |",
+        f"| Production-ready | {'YES' if quality['production_ready'] else 'NO'} |",
+        "",
+    ]
+    if quality["warnings"]:
+        lines += ["> **Warnings**"] + [f"> - {warning}" for warning in quality["warnings"]] + [""]
+    lines += [
         "---",
         "",
         "## 1. Deduplication",
@@ -475,7 +560,7 @@ def main(argv: List[str] | None = None) -> None:
     )
     parser.add_argument(
         "--orcid",
-        default=None,
+        default="0000-0003-0623-4652",
         help="ORCID of the target researcher (improves classification accuracy)",
     )
     parser.add_argument(
@@ -489,6 +574,11 @@ def main(argv: List[str] | None = None) -> None:
         default=Path(__file__).parent / "results.md",
         help="Output path for the markdown report (default: evaluation/results.md)",
     )
+    parser.add_argument(
+        "--strict-quality",
+        action="store_true",
+        help="Exit non-zero unless the gold set meets production data-quality requirements.",
+    )
     args = parser.parse_args(argv)
 
     # ── Load gold ───────────────────────────────────────────────────────────
@@ -498,6 +588,18 @@ def main(argv: List[str] | None = None) -> None:
 
     gold_df = load_gold(args.gold)
     print(f"Loaded {len(gold_df)} gold rows from {args.gold.name}")
+    quality = assess_gold_quality(gold_df)
+    if quality["warnings"]:
+        print("\n[0] DATA QUALITY WARNINGS")
+        for warning in quality["warnings"]:
+            print(f"    - {warning}")
+    if args.strict_quality and not quality["production_ready"]:
+        print(
+            "\nERROR: gold standard is not production-ready. "
+            "Add independently reviewed, complete examples before using release metrics.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     raw_records = gold_to_raw_records(gold_df)
 
@@ -527,7 +629,7 @@ def main(argv: List[str] | None = None) -> None:
     print_summary(dedup_result, cls_result)
 
     # ── Save markdown report ────────────────────────────────────────────────
-    report_md = build_report(args.gold, dedup_result, cls_result, args.researcher_name)
+    report_md = build_report(args.gold, quality, dedup_result, cls_result, args.researcher_name)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(report_md, encoding="utf-8")
     print(f"\nReport saved to: {args.output}")

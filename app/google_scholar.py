@@ -30,6 +30,21 @@ _serpapi_quota_exhausted = threading.Event()
 logger = logging.getLogger(__name__)
 
 
+def _is_quota_error(detail: Any) -> bool:
+    """Return whether a SerpApi error indicates exhausted search quota."""
+    message = str(detail or "").lower()
+    return any(
+        phrase in message
+        for phrase in (
+            "run out of searches",
+            "searches left",
+            "search quota",
+            "quota exhausted",
+            "no searches",
+        )
+    )
+
+
 def _name_score(query: str, candidate: str) -> float:
     normalized_query = re.sub(r"[^a-z0-9 ]", "", query.lower()).strip()
     normalized_candidate = re.sub(r"[^a-z0-9 ]", "", candidate.lower()).strip()
@@ -65,7 +80,7 @@ def _request(params: Dict[str, Any]) -> Dict[str, Any]:
             error_detail = str(response.json().get("error") or "").lower()
         except ValueError:
             error_detail = response.text.lower()
-        if "run out of searches" in error_detail or "searches left" in error_detail:
+        if _is_quota_error(error_detail):
             _serpapi_quota_exhausted.set()
             raise RuntimeError("SerpApi search quota is exhausted")
         retry_after = response.headers.get("Retry-After")
@@ -84,6 +99,9 @@ def _request(params: Dict[str, Any]) -> Dict[str, Any]:
         raise RuntimeError(f"HTTP {response.status_code}: {detail}")
     payload = response.json()
     if payload.get("error"):
+        if _is_quota_error(payload["error"]):
+            _serpapi_quota_exhausted.set()
+            raise RuntimeError("SerpApi search quota is exhausted")
         raise RuntimeError(payload["error"])
     if SCHOLAR_CACHE_TTL_SECONDS:
         with _request_cache_lock:
@@ -293,6 +311,9 @@ def _get_author_profile(researcher_name: str, author_id: str) -> Dict[str, Any]:
         cites_id = article.get("cites_id")
         if cites_id and article.get("cited_by", 0) > 0:
             articles_by_cites_id.setdefault(cites_id, article)
+    articles_without_cites_id = [
+        article for article in articles if not article.get("cites_id")
+    ]
 
     citing_papers: List[Dict[str, Any]] = []
     cluster_results = []
@@ -368,7 +389,7 @@ def get_google_scholar_profile(researcher_name: str) -> Dict[str, Any]:
         if profile_id:
             return _get_author_profile(researcher_name, profile_id)
         return search_result
-    except (requests.RequestException, RuntimeError, ValueError) as exc:
+    except (requests.RequestException, RuntimeError, ValueError, KeyError) as exc:
         return {
             "enabled": True,
             "source": "google_scholar",

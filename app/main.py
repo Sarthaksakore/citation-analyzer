@@ -1,17 +1,17 @@
-"""
-app/main.py — FastAPI entrypoint for Citation Analyzer.
+﻿"""
+app/main.py â€” FastAPI entrypoint for Citation Analyzer.
 
 Endpoints
 ---------
-  GET  /health                              — liveness probe
-  GET  /researchers                         — list all stored researchers
-  POST /researcher/resolve                  — Layer 1: resolve researcher candidates
-  POST /researcher/{researcher_id}/analyze  — full pipeline (Layers 2-5)
-  GET  /researcher/{researcher_id}/citations— cached results, no API calls
-  POST /citations/{citation_id}/review      — human Claim/Reject for UNRESOLVED
+  GET  /health                              â€” liveness probe
+  GET  /researchers                         â€” list all stored researchers
+  POST /researcher/resolve                  â€” Layer 1: resolve researcher candidates
+  POST /researcher/{researcher_id}/analyze  â€” full pipeline (Layers 2-5)
+  GET  /researcher/{researcher_id}/citationsâ€” cached results, no API calls
+  POST /citations/{citation_id}/review      â€” human Claim/Reject for UNRESOLVED
 
-  GET  /statistics/{researcher_id}          — stats from DB + integrity checksum
-  POST /verify-integrity                    — verify HMAC-SHA256 checksum
+  GET  /statistics/{researcher_id}          â€” stats from DB + integrity checksum
+  POST /verify-integrity                    â€” verify HMAC-SHA256 checksum
 
 Security
 --------
@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Literal, Optional
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -40,6 +40,17 @@ from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy.orm import Session
 
 from app.analysis import compute_statistics, compute_statistics_from_db
+from app.auth import (
+    AUTH_COOKIE_SECURE,
+    SESSION_COOKIE,
+    SESSION_TTL_SECONDS,
+    create_session,
+    delete_session,
+    get_current_user,
+    hash_password,
+    validate_email,
+    verify_password,
+)
 from app.dedup import deduplicate_citations, dedup_summary
 from app.disambiguation import classify_all
 from app.google_scholar import get_google_scholar_profile
@@ -55,6 +66,7 @@ from app.security import (
     verify_summary,
 )
 from app.storage import (
+    DBUser,
     DBCitation,
     SessionLocal,
     get_db,
@@ -111,7 +123,7 @@ class ReviewRequest(BaseModel):
     """Body for POST /citations/{citation_id}/review."""
     decision: Literal["claim", "reject"] = Field(
         ...,
-        description="'claim' → mark as SELF; 'reject' → mark as EXTERNAL"
+        description="'claim' â†’ mark as SELF; 'reject' â†’ mark as EXTERNAL"
     )
     reviewer_note: Optional[str] = Field(
         None,
@@ -126,6 +138,20 @@ class ReviewRequest(BaseModel):
     }
 
 
+class RegisterRequest(BaseModel):
+    """Body for POST /auth/register."""
+    full_name: str = Field(..., min_length=1, max_length=200)
+    email: str = Field(..., min_length=3, max_length=320)
+    password: str = Field(..., min_length=8, max_length=128)
+    confirm_password: str = Field(..., min_length=8, max_length=128)
+
+
+class LoginRequest(BaseModel):
+    """Body for POST /auth/login."""
+    email: str = Field(..., min_length=3, max_length=320)
+    password: str = Field(..., min_length=1, max_length=128)
+
+
 # ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
@@ -134,6 +160,8 @@ class ReviewRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialise DB schema on startup."""
+    if os.getenv("APP_ENV", "development").lower() == "production":
+        _validate_production_config()
     init_db()
     yield
 
@@ -146,18 +174,19 @@ app = FastAPI(
     title="Citation Analyzer API",
     description=(
         "Multi-Source Citation Analysis with Deduplication and "
-        "Researcher Disambiguation — VIT Group 5, AY 2026-27\n\n"
-        "**Full pipeline**: OpenAlex + Semantic Scholar → "
-        "dedup → author disambiguation → SELF/EXTERNAL/UNRESOLVED."
+        "Researcher Disambiguation â€” VIT Group 5, AY 2026-27\n\n"
+        "**Full pipeline**: OpenAlex + Semantic Scholar â†’ "
+        "dedup â†’ author disambiguation â†’ SELF/EXTERNAL/UNRESOLVED."
     ),
     version="0.3.0",
     lifespan=lifespan,
 )
 
 _DEFAULT_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000"
+_configured_origins = os.getenv("ALLOWED_ORIGINS", _DEFAULT_ORIGINS)
 _ALLOWED_ORIGINS = [
     origin.strip()
-    for origin in os.getenv("ALLOWED_ORIGINS", _DEFAULT_ORIGINS).split(",")
+    for origin in (_DEFAULT_ORIGINS if _configured_origins.strip() == "*" else _configured_origins).split(",")
     if origin.strip()
 ]
 app.add_middleware(
@@ -190,10 +219,69 @@ async def health(request: Request):
     }
 
 
+@app.post("/auth/register", tags=["Authentication"], summary="Register an account")
+@limiter.limit("10/minute")
+async def register(request: Request, body: RegisterRequest, db: Session = Depends(get_db)):
+    full_name = sanitize_input(body.full_name, max_length=200)
+    if not full_name:
+        raise HTTPException(status_code=422, detail="Full name is required.")
+    if body.password != body.confirm_password:
+        raise HTTPException(status_code=422, detail="Passwords do not match.")
+    email = validate_email(body.email)
+    if db.query(DBUser).filter_by(email=email).first() is not None:
+        raise HTTPException(status_code=409, detail="An account with that email already exists.")
+
+    user = DBUser(full_name=full_name, email=email, password_hash=hash_password(body.password))
+    db.add(user)
+    try:
+        db.commit()
+        db.refresh(user)
+        token = create_session(user, db)
+    except Exception as exc:
+        db.rollback()
+        logger.error("User registration failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Could not create the account.")
+
+    response = JSONResponse({"user": _user_payload(user)})
+    _set_session_cookie(response, token)
+    return response
+
+
+@app.post("/auth/login", tags=["Authentication"], summary="Log in")
+@limiter.limit("10/minute")
+async def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
+    email = validate_email(body.email)
+    user = db.query(DBUser).filter_by(email=email).first()
+    if user is None or not verify_password(body.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    token = create_session(user, db)
+    response = JSONResponse({"user": _user_payload(user)})
+    _set_session_cookie(response, token)
+    return response
+
+
+@app.get("/auth/me", tags=["Authentication"], summary="Get current session")
+@limiter.limit("60/minute")
+async def current_session(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    return {"user": _user_payload(get_current_user(request, db))}
+
+
+@app.post("/auth/logout", tags=["Authentication"], summary="Log out")
+@limiter.limit("30/minute")
+async def logout(request: Request, db: Session = Depends(get_db)):
+    delete_session(request, db)
+    response = JSONResponse({"message": "Logged out successfully."})
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
+
+
 @app.get("/", include_in_schema=False)
 async def root():
     return JSONResponse(
-        {"message": "Citation Analyzer API — see /docs for interactive reference."}
+        {"message": "Citation Analyzer API â€” see /docs for interactive reference."}
     )
 
 
@@ -201,6 +289,7 @@ async def root():
 @limiter.limit("60/minute")
 async def list_researchers(request: Request, db: Session = Depends(get_db)):
     """Return a summary list of all researchers stored in the database."""
+    get_current_user(request, db)
     return {"researchers": get_all_researchers(db)}
 
 
@@ -212,6 +301,7 @@ async def delete_researcher_endpoint(
     db: Session = Depends(get_db),
 ):
     """Delete a researcher profile and all their stored citations."""
+    get_current_user(request, db)
     author_id = sanitize_input(researcher_id) or ""
     if not author_id:
         raise HTTPException(status_code=400, detail="Invalid researcher_id.")
@@ -228,6 +318,7 @@ async def clear_all_researchers_endpoint(
     db: Session = Depends(get_db),
 ):
     """Wipe all cached researcher profiles, publications, and citations."""
+    get_current_user(request, db)
     count = delete_all_researchers(db)
     return {"message": f"Cleared {count} stored researchers from cache."}
 
@@ -251,18 +342,20 @@ async def clear_all_researchers_endpoint(
 async def resolve_researcher_endpoint(
     request: Request,
     body: ResolveRequest,
+    db: Session = Depends(get_db),
 ):
     """
-    **Layer 1 — Researcher Identity Resolution**
+    **Layer 1 â€” Researcher Identity Resolution**
 
     Accepts a free-form query (author name, ORCID, or DOI) and returns up to
     three candidate researcher profiles from OpenAlex for the user to select
     from before running the full analysis pipeline.
 
-    - ORCID format `0000-0000-0000-0000` → direct ORCID lookup
-    - DOI format `10.xxxx/...` → resolve paper → extract authors
-    - Anything else → name search
+    - ORCID format `0000-0000-0000-0000` â†’ direct ORCID lookup
+    - DOI format `10.xxxx/...` â†’ resolve paper â†’ extract authors
+    - Anything else â†’ name search
     """
+    get_current_user(request, db)
     clean_query = sanitize_input(body.query) or ""
     if not clean_query:
         raise HTTPException(status_code=400, detail="Empty or invalid query after sanitisation.")
@@ -309,24 +402,25 @@ async def analyze_researcher(
     """
     **Full citation pipeline** for one researcher:
 
-    1. **Layer 1** — resolve researcher metadata from OpenAlex
-    2. **Layer 2** — fetch raw citations: OpenAlex + Semantic Scholar
-       *(each source is isolated — one failure does not cancel others)*
-    3. **Layer 3** — deduplicate via DOI → source-ID → fuzzy title+author
-    4. **Layer 4** — classify each citing paper SELF / EXTERNAL / UNRESOLVED
-    5. **Layer 5** — compute statistics + sign result with HMAC-SHA256
+    1. **Layer 1** â€” resolve researcher metadata from OpenAlex
+    2. **Layer 2** â€” fetch raw citations: OpenAlex + Semantic Scholar
+       *(each source is isolated â€” one failure does not cancel others)*
+    3. **Layer 3** â€” deduplicate via DOI â†’ source-ID â†’ fuzzy title+author
+    4. **Layer 4** â€” classify each citing paper SELF / EXTERNAL / UNRESOLVED
+    5. **Layer 5** â€” compute statistics + sign result with HMAC-SHA256
 
     Returns the full citation profile with:
-    - `source_wise_counts` — unique citations per source
-    - `deduplicated_count` — after deduplication
+    - `source_wise_counts` â€” unique citations per source
+    - `deduplicated_count` â€” after deduplication
     - `self_citation_count`, `external_citation_count`, `unresolved_count`
-    - `source_overlap` — multi-source vs exclusive
-    - `citations` — full list with DOI, source links, and classification
-    - `statistics._integrity` — HMAC-SHA256 tamper-detection checksum
+    - `source_overlap` â€” multi-source vs exclusive
+    - `citations` â€” full list with DOI, source links, and classification
+    - `statistics._integrity` â€” HMAC-SHA256 tamper-detection checksum
 
     Rate-limited to **{CITATION_SEARCH_RATE_LIMIT}** per client IP.
     Large requests may take 60-120 s depending on publication count.
     """
+    get_current_user(request, db)
     if body is None:
         body = AnalyzeRequest()
 
@@ -337,7 +431,7 @@ async def analyze_researcher(
 
     errors: List[str] = []  # non-fatal errors collected during pipeline
 
-    # ── Layer 1: resolve researcher metadata ──────────────────────────────
+    # â”€â”€ Layer 1: resolve researcher metadata â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     try:
         candidates = resolve_researcher(author_id)
         if candidates:
@@ -364,7 +458,7 @@ async def analyze_researcher(
             "known_coauthors": [],
         }
 
-    # ── Layer 2: fetch raw citations ──────────────────────────────────────
+    # â”€â”€ Layer 2: fetch raw citations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # get_all_citations_for_researcher already isolates source failures
     # internally; we wrap the whole call for belt-and-suspenders safety.
     google_scholar: Dict[str, Any] = {
@@ -393,9 +487,19 @@ async def analyze_researcher(
             if author and author.lower() != researcher_dict.get("display_name", "").lower()
         })
         # Add Scholar citing papers to the same raw/dedup/classification graph.
-        google_scholar = get_google_scholar_profile(
-            researcher_dict.get("display_name", author_id)
-        )
+        try:
+            google_scholar = get_google_scholar_profile(
+                researcher_dict.get("display_name", author_id)
+            )
+        except (RuntimeError, ValueError, KeyError) as exc:
+            logger.warning("Google Scholar provider unavailable for %s: %s", author_id, exc)
+            google_scholar = {
+                "enabled": True,
+                "source": "google_scholar",
+                "matched": False,
+                "query": researcher_dict.get("display_name", author_id),
+                "reason": f"Google Scholar provider error: {exc}",
+            }
         scholar_citations = [
             {**paper, "source": "google_scholar"}
             for paper in google_scholar.get("citing_papers", [])
@@ -409,7 +513,7 @@ async def analyze_researcher(
             cited_title = (paper.get("cited_article_title") or "").strip().lower()
             if cited_title in publication_by_title:
                 paper["cited_work_id"] = publication_by_title[cited_title]
-        # Key is "raw_citations" — as returned by get_all_citations_for_researcher
+        # Key is "raw_citations" â€” as returned by get_all_citations_for_researcher
         raw_records: List[Dict] = pipeline_result.get("raw_citations", [])
         counts_by_source: Dict = pipeline_result.get("counts_by_source", {})
         provider_status = {"openalex": pipeline_result.get("publication_status", {})}
@@ -453,7 +557,7 @@ async def analyze_researcher(
             "note": "No publications returned; completeness cannot be confirmed.",
         })
 
-    # ── Layer 3: deduplicate ──────────────────────────────────────────────
+    # â”€â”€ Layer 3: deduplicate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     try:
         deduped: List[Dict] = deduplicate_citations(raw_records)
         overlap: Dict = dedup_summary(raw_records, deduped)
@@ -463,7 +567,7 @@ async def analyze_researcher(
         deduped = raw_records   # fall back to raw if dedup crashes
         overlap = {}
 
-    # ── Layer 4: classify ─────────────────────────────────────────────────
+    # â”€â”€ Layer 4: classify â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     try:
         classified: List[Dict] = classify_all(deduped, researcher_dict)
     except Exception as exc:
@@ -518,7 +622,7 @@ async def analyze_researcher(
         if work_id in citations_by_pub:
             citations_by_pub[work_id].append(cit)
 
-    # ── Layer 5: statistics + integrity signing ───────────────────────────
+    # â”€â”€ Layer 5: statistics + integrity signing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     try:
         stats = compute_statistics(classified)
     except Exception as exc:
@@ -534,7 +638,7 @@ async def analyze_researcher(
         "raw_source_counts": counts_by_source,
     })
 
-    # ── Persist to DB ─────────────────────────────────────────────────────
+    # â”€â”€ Persist to DB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     persist_error: Optional[str] = None
     if body.persist:
         try:
@@ -546,7 +650,7 @@ async def analyze_researcher(
             logger.error("Persist failed for %s: %s", author_id, exc)
             errors.append(f"Layer 5 (persist): {exc}")
 
-    # ── Build citation list (add source links and persisted IDs) ──────────
+    # â”€â”€ Build citation list (add source links and persisted IDs) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     citation_list = _enrich_citations(classified)
     if body.persist:
         stored = get_researcher_citations(author_id, db)
@@ -599,6 +703,7 @@ async def get_researcher_citations_endpoint(
     Use the optional `classification` query parameter to filter the
     returned citations to just SELF, EXTERNAL, or UNRESOLVED records.
     """
+    get_current_user(request, db)
     author_id = sanitize_input(researcher_id) or ""
     if not author_id:
         raise HTTPException(status_code=400, detail="Invalid researcher_id.")
@@ -636,6 +741,7 @@ async def get_cached_google_scholar_endpoint(
     db: Session = Depends(get_db),
 ):
     """Fetch Scholar data for a cached profile without changing DB citations."""
+    get_current_user(request, db)
     author_id = sanitize_input(researcher_id) or ""
     if not author_id:
         raise HTTPException(status_code=400, detail="Invalid researcher_id.")
@@ -673,12 +779,13 @@ async def review_citation(
     **Human-in-the-loop review** for citations flagged as UNRESOLVED or
     `needs_review=True` by the disambiguation layer.
 
-    - `decision: "claim"` → overrides classification to **SELF**, confidence 1.0
-    - `decision: "reject"` → overrides classification to **EXTERNAL**, confidence 1.0
+    - `decision: "claim"` â†’ overrides classification to **SELF**, confidence 1.0
+    - `decision: "reject"` â†’ overrides classification to **EXTERNAL**, confidence 1.0
 
     The override is stored in the database and will persist across API restarts.
     A `reviewer_note` is appended to the citation's evidence field for audit trail.
     """
+    get_current_user(request, db)
     citation_row: Optional[DBCitation] = (
         db.query(DBCitation).filter(DBCitation.id == citation_id).first()
     )
@@ -708,7 +815,7 @@ async def review_citation(
     )
     citation_row.classification = new_classification
     citation_row.confidence = new_confidence
-    citation_row.needs_review = 0  # resolved by human — clear the flag
+    citation_row.needs_review = 0  # resolved by human â€” clear the flag
 
     try:
         db.commit()
@@ -750,6 +857,7 @@ async def get_statistics(
     Re-compute citation statistics for a researcher from the database.
     Returns the statistics dict signed with an HMAC-SHA256 integrity checksum.
     """
+    get_current_user(request, db)
     author_id = sanitize_input(researcher_id) or ""
     if not author_id:
         raise HTTPException(status_code=400, detail="Invalid researcher_id.")
@@ -789,9 +897,43 @@ async def verify_integrity_endpoint(request: Request, summary: Dict[str, Any]):
 # ---------------------------------------------------------------------------
 
 
+def _user_payload(user: DBUser) -> Dict[str, Any]:
+    return {
+        "id": user.id,
+        "full_name": user.full_name,
+        "email": user.email,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+    }
+
+
+def _validate_production_config() -> None:
+    """Fail fast on unsafe deployment settings instead of silently degrading."""
+    integrity_secret = os.getenv("INTEGRITY_SECRET", "")
+    if not integrity_secret or integrity_secret == "change-me-to-a-random-secret":
+        raise RuntimeError("INTEGRITY_SECRET must be a unique secret in production.")
+    if not AUTH_COOKIE_SECURE:
+        raise RuntimeError("AUTH_COOKIE_SECURE must be true in production.")
+    if os.getenv("ALLOWED_ORIGINS", "").strip() in {"", "*"}:
+        raise RuntimeError("ALLOWED_ORIGINS must explicitly list trusted HTTPS origins in production.")
+    if os.getenv("DATABASE_URL", "").startswith("sqlite"):
+        logger.warning("SQLite is not recommended for multi-worker production deployments.")
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        httponly=True,
+        secure=AUTH_COOKIE_SECURE,
+        samesite="lax",
+        max_age=SESSION_TTL_SECONDS,
+        path="/",
+    )
+
+
 def _enrich_citations(citations: List[Dict]) -> List[Dict]:
     """
-    Add a ``source_links`` field to each citation dict — a list of
+    Add a ``source_links`` field to each citation dict â€” a list of
     ``{source, url}`` dicts so the frontend can render clickable links
     to the original record on each database.
     """
@@ -831,3 +973,6 @@ def _enrich_citations(citations: List[Dict]) -> List[Dict]:
         c["source_links"] = links
         enriched.append(c)
     return enriched
+
+
+

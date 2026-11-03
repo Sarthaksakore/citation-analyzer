@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { api } from './api'
 import { Header } from './components/Header'
+import { AuthScreen } from './components/AuthScreen'
 import { SearchSection } from './components/SearchSection'
 import { DashboardOverview } from './components/DashboardOverview'
 import { CitationsTable } from './components/CitationsTable'
@@ -16,6 +17,7 @@ export default function App() {
   const [loadingState, setLoadingState] = useState({ active: false, step: 0, title: '', message: '' })
   const [analysisData, setAnalysisData] = useState(null)
   const [toast, setToast] = useState(null)
+  const [authState, setAuthState] = useState({ loading: true, user: null })
 
   const showToast = (message, type = 'success') => {
     setToast({ message, type })
@@ -26,14 +28,77 @@ export default function App() {
 
   // Initial load: check health and stored researchers
   useEffect(() => {
+    let frameId
+    let running = true
+    let pointerX = 0.5
+    let pointerY = 0.5
+    let targetPointerX = 0.5
+    let targetPointerY = 0.5
+    let pointerClientX = window.innerWidth / 2
+    let pointerClientY = window.innerHeight / 2
+    let targetClientX = pointerClientX
+    let targetClientY = pointerClientY
+    let targetScroll = 0
+
+    const updatePointer = (event) => {
+      targetPointerX = event.clientX / window.innerWidth
+      targetPointerY = event.clientY / window.innerHeight
+      targetClientX = event.clientX
+      targetClientY = event.clientY
+    }
+
+    const updateAmbientScroll = () => {
+      targetScroll = window.scrollY
+    }
+
+    window.addEventListener('scroll', updateAmbientScroll, { passive: true })
+    window.addEventListener('pointermove', updatePointer, { passive: true })
+    updateAmbientScroll()
+
+    const animateAmbient = () => {
+      if (!running) return
+      pointerX += (targetPointerX - pointerX) * 0.065
+      pointerY += (targetPointerY - pointerY) * 0.065
+      pointerClientX += (targetClientX - pointerClientX) * 0.1
+      pointerClientY += (targetClientY - pointerClientY) * 0.1
+      const maxScroll = document.documentElement.scrollHeight - window.innerHeight
+      const progress = maxScroll > 0 ? targetScroll / maxScroll : 0
+      document.documentElement.style.setProperty('--scroll-progress', progress.toFixed(3))
+      document.documentElement.style.setProperty('--scroll-y', `${targetScroll}px`)
+      document.documentElement.style.setProperty('--ambient-shift-x', `${(pointerX - 0.5) * 24}px`)
+      document.documentElement.style.setProperty('--ambient-shift-y', `${(pointerY - 0.5) * 18}px`)
+      document.documentElement.style.setProperty('--cursor-x', pointerX.toFixed(4))
+      document.documentElement.style.setProperty('--cursor-y', pointerY.toFixed(4))
+      document.documentElement.style.setProperty('--cursor-px', `${pointerClientX}px`)
+      document.documentElement.style.setProperty('--cursor-py', `${pointerClientY}px`)
+      frameId = window.requestAnimationFrame(animateAmbient)
+    }
+
+    frameId = window.requestAnimationFrame(animateAmbient)
+
+    return () => {
+      running = false
+      window.removeEventListener('scroll', updateAmbientScroll)
+      window.removeEventListener('pointermove', updatePointer)
+      window.cancelAnimationFrame(frameId)
+    }
+  }, [])
+
+  useEffect(() => {
     const initApp = async () => {
       try {
         const health = await api.checkHealth()
-        if (health?.status === 'ok') {
-          setServerStatus('connected')
-        }
+        setServerStatus(health?.status === 'ok' ? 'connected' : 'disconnected')
       } catch (err) {
         setServerStatus('disconnected')
+      }
+
+      try {
+        const session = await api.getCurrentUser()
+        setAuthState({ loading: false, user: session.user })
+      } catch (_) {
+        setAuthState({ loading: false, user: null })
+        return
       }
 
       try {
@@ -49,14 +114,32 @@ export default function App() {
     initApp()
   }, [])
 
-  // Re-fetch stored researchers every time the Search tab becomes active
-  // so the "Locally Cached Profiles" list always reflects the latest DB state
+  // Re-fetch stored researchers every time the Search tab becomes active.
   useEffect(() => {
-    if (activeTab !== 'search') return
+    if (!authState.user || activeTab !== 'search') return
     api.getResearchers()
       .then((res) => { if (res?.researchers) setStoredResearchers(res.researchers) })
       .catch(() => { })
-  }, [activeTab])
+  }, [activeTab, authState.user])
+
+  const handleLogout = async () => {
+    try {
+      await api.logout()
+    } finally {
+      setAnalysisData(null)
+      setCandidates([])
+      setStoredResearchers([])
+      setAuthState({ loading: false, user: null })
+    }
+  }
+
+  if (authState.loading) {
+    return <main className="auth-page"><div className="auth-card"><p>Loading secure session...</p></div></main>
+  }
+
+  if (!authState.user) {
+    return <AuthScreen onAuthenticated={(user) => setAuthState({ loading: false, user })} />
+  }
 
   // Resolve researcher candidates (Layer 1)
   const handleResolve = async (query) => {
@@ -213,11 +296,9 @@ export default function App() {
       setAnalysisData((prev) => {
         if (!prev) return prev
         const newClassification = decision === 'claim' ? 'SELF' : 'EXTERNAL'
-        let prevClass = 'UNRESOLVED'
 
         const updatedCitations = prev.citations.map((c) => {
           if (c.id === citationId) {
-            prevClass = c.classification
             return {
               ...c,
               classification: newClassification,
@@ -278,12 +359,21 @@ export default function App() {
 
   return (
     <div className="app-container">
+      <div className="ambient-background" aria-hidden="true">
+        <span className="ambient-light ambient-light-left" />
+        <span className="ambient-light ambient-light-right" />
+        <span className="ambient-light ambient-light-top" />
+        <span className="ambient-light ambient-light-bottom" />
+        <span className="cursor-light" />
+      </div>
       <Header
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         currentResearcher={analysisData?.researcher}
         unresolvedCount={unresolvedCount}
         serverStatus={serverStatus}
+        user={authState.user}
+        onLogout={handleLogout}
       />
 
       <main className="main-content">

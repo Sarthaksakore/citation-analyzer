@@ -63,11 +63,11 @@ export function CitationsTable({
       setSortField(field)
       setSortOrder(field === 'year' || field === 'confidence' ? 'desc' : 'asc')
     }
+  }
 
-    const updateFilter = (value) => {
-      setPage(0)
-      setFilterClass(value)
-    }
+  const updateFilter = (value) => {
+    setPage(0)
+    setFilterClass(value)
   }
 
   const renderSortIndicator = (field) => {

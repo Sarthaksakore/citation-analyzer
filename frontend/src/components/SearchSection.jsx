@@ -145,32 +145,42 @@ export function SearchSection({
       {/* Loading Progress Box */}
       {loadingState.active && (
         <div className="loading-box">
-          <div className="spinner" />
-          <div className="loading-title">{loadingState.title || 'Running Citation Pipeline'}</div>
-          <div className="loading-desc">{loadingState.message || 'Fetching raw records from OpenAlex & Semantic Scholar...'}</div>
+          <div className="loading-topline">
+            <div className="pipeline-orb"><span /></div>
+            <div>
+              <div className="loading-kicker">LIVE ANALYSIS PIPELINE</div>
+              <div className="loading-title">{loadingState.title || 'Running Citation Pipeline'}</div>
+            </div>
+            <span className="pipeline-percent">{Math.min(Math.max(loadingState.step || 1, 1), 5) * 20}%</span>
+          </div>
+          <div className="loading-desc">{loadingState.message || 'Fetching and validating records across supported sources...'}</div>
+          <div className="pipeline-progress">
+            <span style={{ width: `${Math.min(Math.max(loadingState.step || 1, 1), 5) * 20}%` }} />
+          </div>
 
           <div className="stepper">
-            <div className={`step-item ${loadingState.step >= 1 ? (loadingState.step === 1 ? 'active' : 'completed') : ''}`}>
-              <div className="step-icon">{loadingState.step > 1 ? '✓' : '1'}</div>
-              <span>Layer 1: Identity Resolution & Disambiguation</span>
-            </div>
-            <div className={`step-item ${loadingState.step >= 2 ? (loadingState.step === 2 ? 'active' : 'completed') : ''}`}>
-              <div className="step-icon">{loadingState.step > 2 ? '✓' : '2'}</div>
-              <span>Layer 2: Multi-Source Citation Retrieval (OpenAlex,Semantic Scholar and OpenCitations)</span>
-            </div>
-            <div className={`step-item ${loadingState.step >= 3 ? (loadingState.step === 3 ? 'active' : 'completed') : ''}`}>
-              <div className="step-icon">{loadingState.step > 3 ? '✓' : '3'}</div>
-              <span>Layer 3: Cross-Source Deduplication & Title Alignment</span>
-            </div>
-            <div className={`step-item ${loadingState.step >= 4 ? (loadingState.step === 4 ? 'active' : 'completed') : ''}`}>
-              <div className="step-icon">{loadingState.step > 4 ? '✓' : '4'}</div>
-              <span>Layer 4: Self vs. External Citation Classification</span>
-            </div>
-            <div className={`step-item ${loadingState.step >= 5 ? (loadingState.step === 5 ? 'active' : 'completed') : ''}`}>
-              <div className="step-icon">{loadingState.step > 5 ? '✓' : '5'}</div>
-              <span>Layer 5: Generating Final Statistics & Verifying Data Integrity</span>
-            </div>
+            {[
+              ['Resolve identity', 'Match researcher identifiers and author signals'],
+              ['Retrieve citations', 'Query OpenAlex, Semantic Scholar and OpenCitations'],
+              ['Merge records', 'Deduplicate records and align titles'],
+              ['Classify impact', 'Separate self, external and unresolved citations'],
+              ['Verify results', 'Generate statistics and check data integrity'],
+            ].map(([title, detail], index) => {
+              const stage = index + 1
+              const state = loadingState.step > stage ? 'completed' : loadingState.step === stage ? 'active' : ''
+              return (
+                <div className={`step-item ${state}`} key={title}>
+                  <div className="step-icon">{state === 'completed' ? '✓' : stage}</div>
+                  <div className="step-copy">
+                    <strong>{title}</strong>
+                    <span>{detail}</span>
+                  </div>
+                  <span className="step-state">{state === 'completed' ? 'Done' : state === 'active' ? 'Running' : 'Queued'}</span>
+                </div>
+              )
+            })}
           </div>
+          <div className="pipeline-footnote">You can keep this tab open while the multi-source verification completes.</div>
         </div>
       )}
 

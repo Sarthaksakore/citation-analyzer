@@ -42,7 +42,7 @@ export function ReviewQueue({
             Human-in-the-Loop Review Queue
           </h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
-            Flagged citations where author disambiguation confidence is ambiguous or lacks linked identifier corroboration.
+            Confirm whether each citing paper belongs to the researcher. Your decision is saved to the review audit trail.
           </p>
         </div>
         <div className="badge badge-unresolved" style={{ fontSize: '0.85rem', padding: '0.35rem 0.75rem' }}>
@@ -71,6 +71,7 @@ export function ReviewQueue({
         queueItems.map((cit) => {
           const authorsStr = (cit.authors || []).join(', ')
           const isSubmitting = submittingId === cit.id
+          const sourceCount = (cit.sources || []).length
 
           return (
             <div key={cit.id || cit.doi || `${cit.title}-${cit.year || ''}`} className="review-card">
@@ -87,6 +88,7 @@ export function ReviewQueue({
                   <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.35rem', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
                     {cit.year && <span>Published: <strong>{cit.year}</strong></span>}
                     {cit.venue && <span>Venue: {cit.venue}</span>}
+                    {sourceCount > 0 && <span>Sources: <strong>{sourceCount}</strong></span>}
                     {cit.doi && (
                       <a
                         href={`https://doi.org/${cit.doi}`}
@@ -112,7 +114,12 @@ export function ReviewQueue({
               {/* Evidence box */}
               {cit.evidence && (
                 <div className="evidence-box">
-                  <strong>Disambiguation Flag:</strong> {cit.evidence}
+                  <strong>Why this needs review:</strong> {cit.evidence}
+                </div>
+              )}
+              {!cit.id && (
+                <div className="evidence-box" style={{ color: '#fcd34d' }}>
+                  This record cannot be reviewed yet because it has no stored citation ID. Re-analyze the profile to create a reviewable record.
                 </div>
               )}
 

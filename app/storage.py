@@ -72,6 +72,34 @@ class Base(DeclarativeBase):
     __allow_unmapped__ = True
 
 
+class DBUser(Base):
+    """Registered application user."""
+
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    full_name = Column(String(200), nullable=False)
+    email = Column(String(320), unique=True, index=True, nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    sessions: list["DBAuthSession"] = relationship(
+        "DBAuthSession", back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class DBAuthSession(Base):
+    """Server-side session record; the browser receives only the raw token cookie."""
+
+    __tablename__ = "auth_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token_hash = Column(String(64), unique=True, index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    user: "DBUser" = relationship("DBUser", back_populates="sessions")
+
+
 # ---------------------------------------------------------------------------
 # ORM Models
 # ---------------------------------------------------------------------------
@@ -579,4 +607,3 @@ def delete_all_researchers(db: Session) -> int:
     db.commit()
     logger.info("delete_all_researchers: wiped all %d stored researcher profiles", count)
     return count
-

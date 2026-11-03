@@ -6,6 +6,8 @@ export function Header({
   currentResearcher,
   unresolvedCount = 0,
   serverStatus,
+  user,
+  onLogout,
 }) {
   return (
     <header className="app-header">
@@ -88,6 +90,10 @@ export function Header({
       </div>
 
       <div className="header-right">
+        {user && <span className="header-user">{user.full_name}</span>}
+        {onLogout && (
+          <button type="button" className="auth-logout" onClick={onLogout}>Log out</button>
+        )}
         <div className="server-status" title={`FastAPI Backend at http://localhost:8000`}>
           <span className={`status-dot ${serverStatus === 'connected' ? '' : 'offline'}`} />
           <span>{serverStatus === 'connected' ? 'Backend Online' : 'Connecting...'}</span>

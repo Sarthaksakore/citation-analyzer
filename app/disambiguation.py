@@ -226,10 +226,20 @@ def resolve_author_identity(
     target_name = target_researcher.get("display_name") or ""
     name_score = _name_similarity(target_name, author_name)
     source_names = citing_paper.get("sources") or [citing_paper.get("source")]
-    if (
+    target_tokens = _norm_name(target_name).split()
+    candidate_tokens = _norm_name(author_name).split()
+    has_distinctive_full_name = (
         _norm_orcid(target_researcher.get("orcid"))
-        and "google_scholar" in source_names
+        and len(target_tokens) >= 3
+        and len(candidate_tokens) >= 3
+        and name_score >= 95.0
+    )
+    is_abbreviated_name = (
+        _norm_name(target_name) != _norm_name(author_name)
         and _abbreviated_name_match(target_name, author_name)
+    )
+    if _norm_orcid(target_researcher.get("orcid")) and (
+        is_abbreviated_name or has_distinctive_full_name
     ):
         name_score = max(name_score, NAME_MATCH_FLOOR)
 
@@ -289,18 +299,16 @@ def resolve_author_identity(
     # Semantic Scholar often returns reordered or lightly corrupted author
     # strings without stable author IDs. A near-exact name is strong evidence
     # when the selected researcher is independently verified by ORCID.
-    if (
-        _norm_orcid(target_researcher.get("orcid"))
-        and "semantic_scholar" in source_names
-        and name_score >= 95.0
+    if _norm_orcid(target_researcher.get("orcid")) and (
+        is_abbreviated_name or has_distinctive_full_name
     ):
         return _result(
             matched=True,
             confidence=0.75,
-            level="verified_source_name",
+            level="verified_name",
             evidence=(
-                f"Verified researcher ORCID + near-exact Semantic Scholar name "
-                f"match (score={name_score:.1f})"
+                f"Verified researcher ORCID + distinctive name match "
+                f"(score={name_score:.1f})"
             ),
         )
 

@@ -131,7 +131,14 @@ def _combined_similarity(
     Weighted similarity: title (0.7) + author-set Jaccard (0.3).
     Both components are on a 0–100 scale.
     """
-    t_score = fuzz.token_sort_ratio(_norm_title(title_a), _norm_title(title_b))
+    normalized_a = _norm_title(title_a)
+    normalized_b = _norm_title(title_b)
+    # token_set_ratio handles provider title truncation or subtitle loss
+    # without ignoring author and year safeguards below.
+    t_score = max(
+        fuzz.token_sort_ratio(normalized_a, normalized_b),
+        fuzz.token_set_ratio(normalized_a, normalized_b),
+    )
     a_score = _author_set_similarity(authors_a, authors_b)
     return TITLE_WEIGHT * t_score + AUTHOR_WEIGHT * a_score
 
@@ -231,11 +238,6 @@ def deduplicate_citations(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             title_choices[matched_idx] = _norm_title(
                 canonical[matched_idx].get("title")
             )
-            if (
-                matched_idx in fuzzy_indices
-                and _norm_doi(canonical[matched_idx].get("doi"))
-            ):
-                fuzzy_indices.remove(matched_idx)
             # If the merge backfilled a DOI onto canonical, update doi_index so
             # subsequent records for the same paper can be found in O(1)
             new_doi = _norm_doi(canonical[matched_idx].get("doi"))
@@ -246,8 +248,10 @@ def deduplicate_citations(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             entry = _make_canonical(rec)
             canonical.append(entry)
             title_choices.append(_norm_title(entry.get("title")))
-            if not _norm_doi(entry.get("doi")):
-                fuzzy_indices.append(idx)
+            # Keep DOI-bearing records in the fuzzy candidate pool too. A
+            # later source may omit its DOI; the fuzzy matcher still protects
+            # records with conflicting DOIs.
+            fuzzy_indices.append(idx)
 
             # Update indices
             nd = _norm_doi(rec.get("doi"))
@@ -348,7 +352,7 @@ def _fuzzy_match_dict(
             process.extract(
                 _norm_title(title),
                 candidate_titles,
-                scorer=fuzz.token_sort_ratio,
+                scorer=fuzz.token_set_ratio,
                 score_cutoff=(FUZZY_THRESHOLD - AUTHOR_WEIGHT * 100) / TITLE_WEIGHT,
                 limit=None,
             )
