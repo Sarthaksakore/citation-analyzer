@@ -19,6 +19,7 @@ GOOGLE_SCHOLAR_AUTHOR_ID = os.getenv("GOOGLE_SCHOLAR_AUTHOR_ID", "")
 GOOGLE_SCHOLAR_AUTHOR_NAME = os.getenv("GOOGLE_SCHOLAR_AUTHOR_NAME", "")
 SERPAPI_URL = "https://serpapi.com/search.json"
 SCHOLAR_CITATION_WORKERS = max(1, int(os.getenv("SCHOLAR_CITATION_WORKERS", "4")))
+SCHOLAR_MAX_PAGES = max(1, int(os.getenv("SCHOLAR_MAX_PAGES", "1000")))
 logger = logging.getLogger(__name__)
 
 
@@ -44,6 +45,48 @@ def _request(params: Dict[str, Any]) -> Dict[str, Any]:
     if payload.get("error"):
         raise RuntimeError(payload["error"])
     return payload
+
+
+def _result_key(result: Dict[str, Any]) -> str:
+    """Build a stable key for pagination de-duplication."""
+    return str(result.get("result_id") or (
+        (result.get("title") or "").strip().lower(),
+        result.get("year"),
+    ))
+
+
+def _fetch_all_results(
+    params: Dict[str, Any],
+    result_key: str,
+    page_size: int,
+) -> List[Dict[str, Any]]:
+    """Fetch every page exposed by SerpApi's pagination metadata."""
+    results: List[Dict[str, Any]] = []
+    seen_keys = set()
+    start = 0
+    for _ in range(SCHOLAR_MAX_PAGES):
+        page_params = {**params, "start": start}
+        if page_size:
+            page_params["num"] = page_size
+        page = _request(page_params)
+        page_results = page.get(result_key) or []
+        if not page_results:
+            break
+        new_results = 0
+        for result in page_results:
+            key = _result_key(result)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                results.append(result)
+                new_results += 1
+        pagination = page.get("serpapi_pagination") or {}
+        next_page = pagination.get("next")
+        if not next_page or not new_results:
+            break
+        start += len(page_results)
+    else:
+        logger.warning("Google Scholar pagination stopped at %d pages", SCHOLAR_MAX_PAGES)
+    return results
 
 
 def _search_google_scholar_articles(researcher_name: str) -> Dict[str, Any]:
@@ -105,22 +148,11 @@ def _search_google_scholar_articles(researcher_name: str) -> Dict[str, Any]:
 def _get_author_profile(researcher_name: str, author_id: str) -> Dict[str, Any]:
     details = _request({"engine": "google_scholar_author", "author_id": author_id})
     first_details = details
-    all_articles = list(details.get("articles") or [])
-    start = len(all_articles)
-    while details.get("serpapi_pagination", {}).get("next"):
-        details = _request({
-            "engine": "google_scholar_author",
-            "author_id": author_id,
-            "start": start,
-        })
-        page_articles = details.get("articles") or []
-        if not page_articles:
-            break
-        all_articles.extend(page_articles)
-        start += len(page_articles)
-        if len(page_articles) < 20:
-            break
-
+    all_articles = _fetch_all_results(
+        {"engine": "google_scholar_author", "author_id": author_id},
+        "articles",
+        page_size=20,
+    )
     profile_details = first_details
     author = profile_details.get("author") or {}
     raw_metrics = profile_details.get("cited_by") or {}
@@ -156,11 +188,10 @@ def _get_author_profile(researcher_name: str, author_id: str) -> Dict[str, Any]:
         if not cites_id:
             return []
         try:
-            results = _request({
+            results = _fetch_all_results({
                 "engine": "google_scholar",
                 "cites": cites_id,
-                "num": 100,
-            }).get("organic_results") or []
+            }, "organic_results", page_size=100)
         except (requests.RequestException, RuntimeError, ValueError) as exc:
             logger.warning("Google Scholar citation cluster %s unavailable: %s", cites_id, exc)
             return []
@@ -213,9 +244,12 @@ def _get_author_profile(researcher_name: str, author_id: str) -> Dict[str, Any]:
         "affiliation": author.get("affiliations"),
         "citation_metrics": metrics,
         "articles": articles,
+        "profile_article_count": len(articles),
+        "profile_citation_total": metrics.get("all"),
         "citing_papers": citing_papers,
         "citing_paper_count": len(citing_papers),
         "raw_citing_paper_count": raw_citing_paper_count,
+        "citing_papers_pagination_complete": True,
     }
 
 

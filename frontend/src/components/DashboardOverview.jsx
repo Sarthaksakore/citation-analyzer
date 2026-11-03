@@ -19,6 +19,7 @@ export function DashboardOverview({
   const googleScholarCitingCount = googleScholar?.citing_paper_count ?? 0
   const googleScholarRawCitingCount = googleScholar?.raw_citing_paper_count ?? googleScholarCitingCount
   const googleScholarSelfCount = googleScholar?.self_citation_count ?? 0
+  const googleScholarArticleCount = googleScholar?.profile_article_count
 
   // Citations classification stats
   const totalDeduped = statistics?.deduplicated_count ?? citations.length
@@ -360,7 +361,12 @@ export function DashboardOverview({
               )}
               {googleScholar?.matched && googleScholarTotal != null && googleScholarCitingCount > 0 && (
                 <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>
-                  Profile total counts citation occurrences; analyzed papers are deduplicated.
+                  Profile total counts citation occurrences; all available citing-paper pages are fetched and deduplicated.
+                </span>
+              )}
+              {googleScholar?.matched && googleScholarArticleCount != null && (
+                <span style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
+                  {googleScholarArticleCount} profile articles fetched
                 </span>
               )}
               {googleScholar?.matched && (
