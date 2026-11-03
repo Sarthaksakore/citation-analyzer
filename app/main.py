@@ -372,6 +372,7 @@ async def analyze_researcher(
         "source": "google_scholar",
         "reason": "Google Scholar data unavailable",
     }
+    provider_status: Dict[str, Any] = {}
     try:
         pipeline_result = get_all_citations_for_researcher(
             author_id,
@@ -411,6 +412,26 @@ async def analyze_researcher(
         # Key is "raw_citations" — as returned by get_all_citations_for_researcher
         raw_records: List[Dict] = pipeline_result.get("raw_citations", [])
         counts_by_source: Dict = pipeline_result.get("counts_by_source", {})
+        provider_status = {"openalex": pipeline_result.get("publication_status", {})}
+        source_key_map = {
+            "OpenAlex": "openalex_citations",
+            "Semantic Scholar": "semantic_scholar",
+            "OpenCitations": "opencitations",
+            "IEEE/Scopus/WoS": "institutional_sources",
+        }
+        for source_name, source_report in pipeline_result.get("source_status", {}).items():
+            report = dict(source_report)
+            report["status"] = (
+                "complete"
+                if report["works_failed"] == 0 and report["works_empty_or_unavailable"] == 0
+                else "partial_or_unavailable"
+            )
+            report["note"] = (
+                "No records were returned for one or more works; this may be a genuine zero "
+                "or provider unavailability."
+                if report["status"] != "complete" else None
+            )
+            provider_status[source_key_map.get(source_name, source_name)] = report
         raw_records.extend(scholar_citations)
         counts_by_source["google_scholar"] = len(scholar_citations)
     except Exception as exc:
@@ -427,6 +448,10 @@ async def analyze_researcher(
             "Citations from other available providers are still included."
         )
         errors.append("Publication provider returned no publications; continuing with available citation sources.")
+        provider_status.setdefault("openalex", {
+            "status": "empty_or_unavailable",
+            "note": "No publications returned; completeness cannot be confirmed.",
+        })
 
     # ── Layer 3: deduplicate ──────────────────────────────────────────────
     try:
@@ -458,6 +483,25 @@ async def analyze_researcher(
         paper.get("classification") == "UNRESOLVED" for paper in scholar_classified
     )
     google_scholar["classified_citing_papers"] = scholar_classified
+    scholar_complete = (
+        google_scholar.get("enabled", False)
+        and google_scholar.get("matched", False)
+        and google_scholar.get("profile_fetch", {}).get("complete", False)
+        and google_scholar.get("citing_paper_fetch", {}).get("complete", False)
+    )
+    provider_status["google_scholar"] = {
+        "status": "complete" if scholar_complete else (
+            "unavailable" if not google_scholar.get("enabled") else "partial_or_unavailable"
+        ),
+        "note": None if scholar_complete else google_scholar.get(
+            "reason",
+            "Profile or citation pagination was incomplete.",
+        ),
+        "profile_articles": google_scholar.get("profile_article_count", 0),
+        "profile_citations": google_scholar.get("profile_citation_total"),
+        "citing_papers": google_scholar.get("citing_paper_count", 0),
+        "fetch": google_scholar.get("citing_paper_fetch") or {},
+    }
 
     # Group by publication for storage
     citations_by_pub: Dict[str, List[Dict]] = {p["work_id"]: [] for p in publications}
@@ -518,6 +562,7 @@ async def analyze_researcher(
         "statistics": signed_stats,
         "citations": citation_list,
         "google_scholar": google_scholar,
+        "provider_status": provider_status,
         "pipeline_errors": errors,          # non-fatal errors (empty = clean run)
     }
 

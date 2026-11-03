@@ -60,12 +60,15 @@ def _fetch_all_results(
     result_key: str,
     page_size: int,
     first_page: Optional[Dict[str, Any]] = None,
-) -> List[Dict[str, Any]]:
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Fetch every page exposed by SerpApi's pagination metadata."""
     results: List[Dict[str, Any]] = []
     seen_keys = set()
     page = first_page
     start = 0
+    pages_fetched = 0
+    complete = True
+    stop_reason = "no_next_page"
     for page_number in range(SCHOLAR_MAX_PAGES):
         if page is None:
             page_params = {**params, "start": start}
@@ -73,7 +76,9 @@ def _fetch_all_results(
                 page_params["num"] = page_size
             page = _request(page_params)
         page_results = page.get(result_key) or []
+        pages_fetched += 1
         if not page_results:
+            stop_reason = "empty_page"
             break
         new_results = 0
         for result in page_results:
@@ -85,12 +90,20 @@ def _fetch_all_results(
         pagination = page.get("serpapi_pagination") or {}
         next_page = pagination.get("next")
         if not next_page or not new_results:
+            stop_reason = "duplicate_page" if not new_results else "no_next_page"
             break
         start += len(page_results)
         page = None
     else:
         logger.warning("Google Scholar pagination stopped at %d pages", SCHOLAR_MAX_PAGES)
-    return results
+        complete = False
+        stop_reason = "max_pages"
+    return results, {
+        "pages_fetched": pages_fetched,
+        "results_fetched": len(results),
+        "complete": complete,
+        "stop_reason": stop_reason,
+    }
 
 
 def _search_google_scholar_articles(researcher_name: str) -> Dict[str, Any]:
@@ -145,6 +158,12 @@ def _search_google_scholar_articles(researcher_name: str) -> Dict[str, Any]:
             "search_results": sum(article["cited_by"] for article in articles),
         },
         "articles": articles,
+        "profile_fetch": {
+            "pages_fetched": 1,
+            "results_fetched": len(search.get("organic_results") or []),
+            "complete": False,
+            "stop_reason": "profile_not_resolved",
+        },
         "reason": "Profile lookup is unavailable; showing name-based Scholar results",
     }
 
@@ -152,7 +171,7 @@ def _search_google_scholar_articles(researcher_name: str) -> Dict[str, Any]:
 def _get_author_profile(researcher_name: str, author_id: str) -> Dict[str, Any]:
     details = _request({"engine": "google_scholar_author", "author_id": author_id})
     first_details = details
-    all_articles = _fetch_all_results(
+    all_articles, article_pagination = _fetch_all_results(
         {"engine": "google_scholar_author", "author_id": author_id},
         "articles",
         page_size=20,
@@ -188,18 +207,18 @@ def _get_author_profile(researcher_name: str, author_id: str) -> Dict[str, Any]:
             "url": article.get("link"),
         })
 
-    def fetch_citing_papers(article: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def fetch_citing_papers(article: Dict[str, Any]) -> Dict[str, Any]:
         cites_id = article.get("cites_id")
         if not cites_id:
-            return []
+            return {"papers": [], "pages": 0, "complete": True, "error": None}
         try:
-            results = _fetch_all_results({
+            results, pagination = _fetch_all_results({
                 "engine": "google_scholar",
                 "cites": cites_id,
             }, "organic_results", page_size=100)
         except (requests.RequestException, RuntimeError, ValueError) as exc:
             logger.warning("Google Scholar citation cluster %s unavailable: %s", cites_id, exc)
-            return []
+            return {"papers": [], "pages": 0, "complete": False, "error": str(exc)}
         citing_papers = []
         for result in results:
             publication_info = result.get("publication_info") or {}
@@ -218,7 +237,12 @@ def _get_author_profile(researcher_name: str, author_id: str) -> Dict[str, Any]:
                 "cited_article_title": article.get("title"),
                 "cited_article_id": article.get("citation_id"),
             })
-        return citing_papers
+        return {
+            "papers": citing_papers,
+            "pages": pagination["pages_fetched"],
+            "complete": pagination["complete"],
+            "error": None,
+        }
 
     articles_by_cites_id: Dict[str, Dict[str, Any]] = {}
     articles_without_cites_id: List[Dict[str, Any]] = []
@@ -230,11 +254,12 @@ def _get_author_profile(researcher_name: str, author_id: str) -> Dict[str, Any]:
             articles_without_cites_id.append(article)
 
     citing_papers: List[Dict[str, Any]] = []
+    cluster_results = []
     with ThreadPoolExecutor(max_workers=SCHOLAR_CITATION_WORKERS) as executor:
-        for papers in executor.map(fetch_citing_papers, articles_by_cites_id.values()):
-            citing_papers.extend(papers)
-        for papers in executor.map(fetch_citing_papers, articles_without_cites_id):
-            citing_papers.extend(papers)
+        cluster_results.extend(executor.map(fetch_citing_papers, articles_by_cites_id.values()))
+        cluster_results.extend(executor.map(fetch_citing_papers, articles_without_cites_id))
+    for result in cluster_results:
+        citing_papers.extend(result["papers"])
 
     raw_citing_paper_count = len(citing_papers)
     unique_citing_papers: Dict[str, Dict[str, Any]] = {}
@@ -262,10 +287,19 @@ def _get_author_profile(researcher_name: str, author_id: str) -> Dict[str, Any]:
         "articles": articles,
         "profile_article_count": len(articles),
         "profile_citation_total": metrics.get("all"),
+        "profile_fetch": article_pagination,
         "citing_papers": citing_papers,
         "citing_paper_count": len(citing_papers),
         "raw_citing_paper_count": raw_citing_paper_count,
-        "citing_papers_pagination_complete": True,
+        "citing_paper_fetch": {
+            "clusters_requested": len(articles),
+            "clusters_with_cites_id": len(articles_by_cites_id),
+            "clusters_succeeded": sum(result["error"] is None for result in cluster_results),
+            "clusters_failed": sum(result["error"] is not None for result in cluster_results),
+            "pages_fetched": sum(result["pages"] for result in cluster_results),
+            "complete": all(result["complete"] for result in cluster_results),
+            "errors": [result["error"] for result in cluster_results if result["error"]],
+        },
     }
 
 

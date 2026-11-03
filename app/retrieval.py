@@ -756,6 +756,7 @@ def get_citing_papers(
     cited_title: Optional[str] = None,
     max_results_per_source: Optional[int] = None,
     enrich_crossref: Optional[bool] = None,
+    diagnostics: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict]:
     """
     Retrieve all raw citing papers for a single work from all available sources.
@@ -818,9 +819,23 @@ def get_citing_papers(
         futures = [(label, executor.submit(task)) for label, task in source_tasks]
         for label, future in futures:
             try:
-                all_records.extend(future.result())
+                records = future.result()
+                all_records.extend(records)
+                if diagnostics is not None:
+                    diagnostics.append({
+                        "source": label,
+                        "status": "returned_data" if records else "empty_or_unavailable",
+                        "records": len(records),
+                    })
             except Exception as exc:
                 logger.error("[%s] Unexpected error for work %s: %s", label, cited_work_id, exc)
+                if diagnostics is not None:
+                    diagnostics.append({
+                        "source": label,
+                        "status": "failed",
+                        "records": 0,
+                        "error": str(exc),
+                    })
 
     logger.info(
         "get_citing_papers: work=%s doi=%s → %d total raw records",
@@ -879,11 +894,43 @@ def get_all_citations_for_researcher(
         )
 
     all_citations: List[Dict] = []
+    source_diagnostics: List[Dict[str, Any]] = []
+
+    def fetch_publication_citations_with_report(pub: Dict) -> List[Dict]:
+        return get_citing_papers(
+            cited_work_id=pub["work_id"],
+            cited_doi=pub.get("doi"),
+            cited_title=pub.get("title"),
+            max_results_per_source=max_results_per_source,
+            diagnostics=source_diagnostics,
+        )
+
     with ThreadPoolExecutor(max_workers=RETRIEVAL_WORKERS) as executor:
-        for citing in executor.map(fetch_publication_citations, publications):
+        for citing in executor.map(fetch_publication_citations_with_report, publications):
             all_citations.extend(citing)
 
     counts = Counter(r.get("source", "unknown") for r in all_citations)
+    source_status: Dict[str, Dict[str, Any]] = {}
+    for report in source_diagnostics:
+        source = report["source"]
+        current = source_status.setdefault(source, {
+            "works_requested": 0,
+            "works_with_data": 0,
+            "works_empty_or_unavailable": 0,
+            "works_failed": 0,
+            "records": 0,
+            "errors": [],
+        })
+        current["works_requested"] += 1
+        current["records"] += report["records"]
+        if report["status"] == "returned_data":
+            current["works_with_data"] += 1
+        elif report["status"] == "failed":
+            current["works_failed"] += 1
+            if report.get("error"):
+                current["errors"].append(report["error"])
+        else:
+            current["works_empty_or_unavailable"] += 1
 
     logger.info(
         "get_all_citations_for_researcher: done — %d total raw records | %s",
@@ -895,5 +942,17 @@ def get_all_citations_for_researcher(
         "publications": publications,
         "raw_citations": all_citations,
         "counts_by_source": dict(counts),
+        "source_status": source_status,
+        "publication_status": {
+            "provider": "openalex",
+            "requested": True,
+            "returned": len(publications),
+            "complete": bool(publications),
+            "status": "complete" if publications else "empty_or_unavailable",
+            "note": (
+                "A zero result may mean no indexed works or provider unavailability; "
+                "the API does not expose a definitive distinction."
+            ) if not publications else None,
+        },
         "total": len(all_citations),
     }

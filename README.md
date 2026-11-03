@@ -83,3 +83,17 @@ see `.env.example` for the supported variables.
 
 Never commit `.env`, API keys, the local SQLite database, virtual environments,
 or generated build output.
+
+## Data completeness
+
+Analysis responses include `provider_status` and `pipeline_errors`. The
+dashboard shows a **Data completeness warning** whenever a provider returns no
+records, fails for one or more works, or cannot prove that pagination reached
+the end. Counts shown by the dashboard are fetched records only; they are
+never estimates of records that could not be retrieved.
+
+Google Scholar profile and citing-paper requests follow the provider's
+pagination links and report fetched pages, failed citation groups, and whether
+pagination completed. A name-based Scholar search without a resolved author
+profile is intentionally marked partial because it cannot represent the full
+profile.

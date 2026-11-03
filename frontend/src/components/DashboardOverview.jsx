@@ -20,6 +20,9 @@ export function DashboardOverview({
   const googleScholarRawCitingCount = googleScholar?.raw_citing_paper_count ?? googleScholarCitingCount
   const googleScholarSelfCount = googleScholar?.self_citation_count ?? 0
   const googleScholarArticleCount = googleScholar?.profile_article_count
+  const providerStatus = analysisData.provider_status || {}
+  const incompleteProviders = Object.entries(providerStatus)
+    .filter(([, status]) => status?.status && status.status !== 'complete')
 
   // Citations classification stats
   const totalDeduped = statistics?.deduplicated_count ?? citations.length
@@ -106,6 +109,34 @@ export function DashboardOverview({
             View All Citations ({citations.length})
           </button>
         </div>
+
+        {incompleteProviders.length > 0 && (
+          <div
+            role="status"
+            style={{
+              marginTop: '1rem',
+              padding: '0.85rem 1rem',
+              border: '1px solid rgba(245, 158, 11, 0.45)',
+              borderRadius: '0.75rem',
+              background: 'rgba(120, 53, 15, 0.18)',
+              color: '#fde68a',
+              fontSize: '0.85rem',
+            }}
+          >
+            <strong>Data completeness warning</strong>
+            <ul style={{ margin: '0.45rem 0 0 1.1rem' }}>
+              {incompleteProviders.map(([provider, status]) => (
+                <li key={provider}>
+                  {provider}: {status.note || 'some records could not be fetched or completeness could not be confirmed'}
+                  {status.fetch?.clusters_failed > 0 && ` (${status.fetch.clusters_failed} citation groups failed)`}
+                </li>
+              ))}
+            </ul>
+            <div style={{ marginTop: '0.45rem', color: '#fef3c7' }}>
+              Counts shown below are fetched records, not an estimate of missing records.
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Primary KPI Metrics */}
@@ -361,7 +392,7 @@ export function DashboardOverview({
               )}
               {googleScholar?.matched && googleScholarTotal != null && googleScholarCitingCount > 0 && (
                 <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>
-                  Profile total counts citation occurrences; all available citing-paper pages are fetched and deduplicated.
+                  Profile total counts citation occurrences; fetched papers are deduplicated.
                 </span>
               )}
               {googleScholar?.matched && googleScholarArticleCount != null && (
