@@ -97,3 +97,9 @@ pagination links and report fetched pages, failed citation groups, and whether
 pagination completed. A name-based Scholar search without a resolved author
 profile is intentionally marked partial because it cannot represent the full
 profile.
+
+Successful provider responses are cached in memory for 15 minutes by default.
+This avoids repeating identical requests when a profile is reloaded or a
+cached result is viewed. Configure the TTL and cache size with
+`API_CACHE_TTL_SECONDS`, `API_CACHE_MAX_ENTRIES`, and
+`SCHOLAR_CACHE_TTL_SECONDS`.

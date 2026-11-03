@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from rapidfuzz import fuzz, process
@@ -67,20 +68,24 @@ def _norm_doi(doi: Optional[str]) -> Optional[str]:
     return doi or None
 
 
-def _norm_title(title: Optional[str]) -> str:
+@lru_cache(maxsize=16384)
+def _norm_title_cached(title: str) -> str:
     """
     Normalise a title for fuzzy comparison:
     lowercase → remove punctuation → collapse whitespace.
     """
-    if not title:
-        return ""
     t = title.lower().strip()
     t = re.sub(r"[^\w\s]", " ", t)
     t = re.sub(r"\s+", " ", t)
     return t.strip()
 
 
-def _norm_author_set(authors: List[str]) -> Set[str]:
+def _norm_title(title: Optional[str]) -> str:
+    return _norm_title_cached(title or "")
+
+
+@lru_cache(maxsize=16384)
+def _norm_author_set_cached(authors: Tuple[str, ...]) -> frozenset[str]:
     """
     Build a normalised set of author last-names for set-similarity comparison.
     Handles both "Given Family" and "Family, Given" formats.
@@ -96,7 +101,11 @@ def _norm_author_set(authors: List[str]) -> Set[str]:
             parts = name.split()
             if parts:
                 last_names.add(parts[-1].lower())
-    return last_names
+    return frozenset(last_names)
+
+
+def _norm_author_set(authors: List[str]) -> Set[str]:
+    return set(_norm_author_set_cached(tuple(authors or [])))
 
 
 def _author_set_similarity(a: List[str], b: List[str]) -> float:

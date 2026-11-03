@@ -34,7 +34,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from dotenv import load_dotenv
@@ -63,6 +63,10 @@ OPENCITATIONS_BASE = "https://opencitations.net/index/coci/api/v1"
 
 # Polite base delay between requests (seconds)
 REQUEST_DELAY: float = 0.5
+CACHE_TTL_SECONDS: float = max(0.0, float(os.getenv("API_CACHE_TTL_SECONDS", "900")))
+CACHE_MAX_ENTRIES: int = max(1, int(os.getenv("API_CACHE_MAX_ENTRIES", "4096")))
+_response_cache: Dict[Tuple[str, str, str], Tuple[float, Dict[str, Any]]] = {}
+_response_cache_lock = threading.Lock()
 
 # Keep external requests bounded while allowing independent works and sources
 # to be retrieved concurrently.
@@ -114,14 +118,26 @@ def _get_with_retry(
     """
     merged_headers = _build_headers(headers)
     retries_limit = max_retries if max_retries is not None else MAX_RETRIES
+    request_params = {
+        key: value
+        for key, value in (params or {}).items()
+        if value not in (None, "")
+    }
+    cache_key = (
+        url,
+        json.dumps(request_params, sort_keys=True, default=str),
+        json.dumps(headers or {}, sort_keys=True),
+    )
+    if CACHE_TTL_SECONDS:
+        with _response_cache_lock:
+            cached = _response_cache.get(cache_key)
+            if cached and time.monotonic() - cached[0] < CACHE_TTL_SECONDS:
+                return json.loads(json.dumps(cached[1]))
+            if cached:
+                _response_cache.pop(cache_key, None)
 
     for attempt in range(retries_limit + 1):
         try:
-            request_params = {
-                key: value
-                for key, value in (params or {}).items()
-                if value not in (None, "")
-            }
             if "S2/" in source_label:
                 request_gate = _S2_REQUEST_GATE
             elif "Crossref/" in source_label:
@@ -150,7 +166,14 @@ def _get_with_retry(
                 continue
 
             resp.raise_for_status()
-            return resp.json()
+            payload = resp.json()
+            if CACHE_TTL_SECONDS and isinstance(payload, dict):
+                with _response_cache_lock:
+                    if len(_response_cache) >= CACHE_MAX_ENTRIES:
+                        oldest_key = min(_response_cache, key=lambda key: _response_cache[key][0])
+                        _response_cache.pop(oldest_key, None)
+                    _response_cache[cache_key] = (time.monotonic(), payload)
+            return payload
 
         except requests.exceptions.Timeout:
             wait = BACKOFF_BASE ** attempt

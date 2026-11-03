@@ -5,6 +5,9 @@ from __future__ import annotations
 import os
 import re
 import logging
+import json
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
@@ -20,6 +23,9 @@ GOOGLE_SCHOLAR_AUTHOR_NAME = os.getenv("GOOGLE_SCHOLAR_AUTHOR_NAME", "")
 SERPAPI_URL = "https://serpapi.com/search.json"
 SCHOLAR_CITATION_WORKERS = max(1, int(os.getenv("SCHOLAR_CITATION_WORKERS", "12")))
 SCHOLAR_MAX_PAGES = max(1, int(os.getenv("SCHOLAR_MAX_PAGES", "1000")))
+SCHOLAR_CACHE_TTL_SECONDS = max(0.0, float(os.getenv("SCHOLAR_CACHE_TTL_SECONDS", "900")))
+_request_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
+_request_cache_lock = threading.Lock()
 logger = logging.getLogger(__name__)
 
 
@@ -30,6 +36,14 @@ def _name_score(query: str, candidate: str) -> float:
 
 
 def _request(params: Dict[str, Any]) -> Dict[str, Any]:
+    cache_key = json.dumps(params, sort_keys=True, default=str)
+    if SCHOLAR_CACHE_TTL_SECONDS:
+        with _request_cache_lock:
+            cached = _request_cache.get(cache_key)
+            if cached and time.monotonic() - cached[0] < SCHOLAR_CACHE_TTL_SECONDS:
+                return json.loads(json.dumps(cached[1]))
+            if cached:
+                _request_cache.pop(cache_key, None)
     response = requests.get(
         SERPAPI_URL,
         params={**params, "api_key": SERPAPI_KEY},
@@ -44,6 +58,9 @@ def _request(params: Dict[str, Any]) -> Dict[str, Any]:
     payload = response.json()
     if payload.get("error"):
         raise RuntimeError(payload["error"])
+    if SCHOLAR_CACHE_TTL_SECONDS:
+        with _request_cache_lock:
+            _request_cache[cache_key] = (time.monotonic(), payload)
     return payload
 
 
