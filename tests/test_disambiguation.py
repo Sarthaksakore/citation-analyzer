@@ -278,10 +278,11 @@ class TestClassifyCitation:
         result = classify_citation(paper, researcher)
         assert result["classification"] == "EXTERNAL"
 
-    def test_no_authors_classified_external(self, researcher):
+    def test_no_authors_classified_unresolved(self, researcher):
         paper = {"title": "No Authors Paper", "authors": [], "year": 2020}
         result = classify_citation(paper, researcher)
-        assert result["classification"] == "EXTERNAL"
+        assert result["classification"] == "UNRESOLVED"
+        assert result["needs_review"] is True
 
     def test_result_has_required_keys(self, researcher, paper_base):
         result = classify_citation(paper_base, researcher)

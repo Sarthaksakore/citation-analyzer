@@ -71,10 +71,12 @@ _response_cache_lock = threading.Lock()
 # Keep external requests bounded while allowing independent works and sources
 # to be retrieved concurrently.
 RETRIEVAL_WORKERS: int = max(1, int(os.getenv("RETRIEVAL_WORKERS", "8")))
+OPENALEX_REQUEST_WORKERS: int = max(1, int(os.getenv("OPENALEX_REQUEST_WORKERS", "1")))
 S2_REQUEST_WORKERS: int = max(1, int(os.getenv("S2_REQUEST_WORKERS", "1")))
 CROSSREF_REQUEST_WORKERS: int = max(1, int(os.getenv("CROSSREF_REQUEST_WORKERS", "2")))
 _S2_REQUEST_GATE = threading.Semaphore(S2_REQUEST_WORKERS)
 _CROSSREF_REQUEST_GATE = threading.Semaphore(CROSSREF_REQUEST_WORKERS)
+_OPENALEX_REQUEST_GATE = threading.Semaphore(OPENALEX_REQUEST_WORKERS)
 
 # Retry configuration for transient errors
 MAX_RETRIES: int = 4
@@ -138,7 +140,9 @@ def _get_with_retry(
 
     for attempt in range(retries_limit + 1):
         try:
-            if "S2/" in source_label:
+            if "OpenAlex/" in source_label:
+                request_gate = _OPENALEX_REQUEST_GATE
+            elif "S2/" in source_label:
                 request_gate = _S2_REQUEST_GATE
             elif "Crossref/" in source_label:
                 request_gate = _CROSSREF_REQUEST_GATE
@@ -157,7 +161,7 @@ def _get_with_retry(
             # Rate-limited or server overload — back off and retry
             if resp.status_code in (429, 503):
                 retry_after = int(resp.headers.get("Retry-After", 0))
-                wait = min(max(retry_after, BACKOFF_BASE ** attempt), 2.5)
+                wait = max(retry_after, min(BACKOFF_BASE ** (attempt + 1), 30.0))
                 logger.warning(
                     "[%s] HTTP %d — backing off %.1fs (attempt %d/%d): %s",
                     source_label, resp.status_code, wait, attempt + 1, retries_limit, url,

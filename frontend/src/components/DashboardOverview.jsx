@@ -23,6 +23,7 @@ export function DashboardOverview({
   const providerStatus = analysisData.provider_status || {}
   const incompleteProviders = Object.entries(providerStatus)
     .filter(([, status]) => status?.status && status.status !== 'complete')
+  const dataIncomplete = incompleteProviders.length > 0
 
   // Citations classification stats
   const totalDeduped = statistics?.deduplicated_count ?? citations.length
@@ -157,17 +158,23 @@ export function DashboardOverview({
 
         <div className="metric-card emerald self-highlight">
           <div className="metric-label">Self-Citations</div>
-          <div className="metric-value" style={{ color: 'var(--color-self)' }}>{selfCount}</div>
+          <div className="metric-value" style={{ color: 'var(--color-self)' }}>{dataIncomplete ? '—' : selfCount}</div>
           <div className="metric-sub self-highlight-sub">
-            <strong>{selfPct}%</strong> of verified citations
-            <span>{selfCount > 0 ? 'Identity evidence confirmed' : 'No confirmed author matches'}</span>
+          {dataIncomplete ? (
+            <span>Cannot confirm while provider data is incomplete</span>
+          ) : (
+            <>
+              <strong>{selfPct}%</strong> of verified citations
+              <span>{selfCount > 0 ? 'Identity evidence confirmed' : 'No confirmed author matches'}</span>
+            </>
+          )}
           </div>
         </div>
 
         <div className="metric-card sky">
-          <div className="metric-label">External Citations</div>
+          <div className="metric-label">{dataIncomplete ? 'Provisional External Citations' : 'External Citations'}</div>
           <div className="metric-value" style={{ color: 'var(--color-external)' }}>{externalCount}</div>
-          <div className="metric-sub">{extPct}% genuine peer impact</div>
+          <div className="metric-sub">{dataIncomplete ? 'Not a complete peer-impact measure' : `${extPct}% genuine peer impact`}</div>
         </div>
 
         <div className="metric-card amber">

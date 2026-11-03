@@ -61,7 +61,7 @@ CONFIDENCE = {
     "orcid": 1.00,
     "db_author_id": 0.95,
     "affiliation": 0.80,
-    "co_author": 0.75,
+    "co_author": 0.65,
     "name_only": 0.40,
     "no_match": 0.00,
 }
@@ -350,10 +350,10 @@ def classify_citation(
     if not authors:
         result = citing_paper.copy()
         result.update({
-            "classification": "EXTERNAL",
-            "confidence": 1.0,
-            "evidence": "No authors listed in citing paper",
-            "needs_review": False,
+            "classification": "UNRESOLVED",
+            "confidence": 0.0,
+            "evidence": "Cannot classify citation because no author metadata was returned",
+            "needs_review": True,
             "author_resolutions": [],
         })
         return result

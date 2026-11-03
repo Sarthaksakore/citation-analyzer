@@ -21,7 +21,7 @@ SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
 GOOGLE_SCHOLAR_AUTHOR_ID = os.getenv("GOOGLE_SCHOLAR_AUTHOR_ID", "")
 GOOGLE_SCHOLAR_AUTHOR_NAME = os.getenv("GOOGLE_SCHOLAR_AUTHOR_NAME", "")
 SERPAPI_URL = "https://serpapi.com/search.json"
-SCHOLAR_CITATION_WORKERS = max(1, int(os.getenv("SCHOLAR_CITATION_WORKERS", "12")))
+SCHOLAR_CITATION_WORKERS = max(1, int(os.getenv("SCHOLAR_CITATION_WORKERS", "2")))
 SCHOLAR_MAX_PAGES = max(1, int(os.getenv("SCHOLAR_MAX_PAGES", "1000")))
 SCHOLAR_CACHE_TTL_SECONDS = max(0.0, float(os.getenv("SCHOLAR_CACHE_TTL_SECONDS", "900")))
 _request_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
@@ -44,11 +44,28 @@ def _request(params: Dict[str, Any]) -> Dict[str, Any]:
                 return json.loads(json.dumps(cached[1]))
             if cached:
                 _request_cache.pop(cache_key, None)
-    response = requests.get(
-        SERPAPI_URL,
-        params={**params, "api_key": SERPAPI_KEY},
-        timeout=15,
-    )
+    last_error = None
+    for attempt in range(4):
+        try:
+            response = requests.get(
+                SERPAPI_URL,
+                params={**params, "api_key": SERPAPI_KEY},
+                timeout=15,
+            )
+        except requests.RequestException as exc:
+            last_error = exc
+            time.sleep(min(2 ** attempt, 15))
+            continue
+        if response.status_code != 429:
+            break
+        retry_after = response.headers.get("Retry-After")
+        try:
+            wait = float(retry_after) if retry_after else min(2 ** (attempt + 1), 30)
+        except ValueError:
+            wait = min(2 ** (attempt + 1), 30)
+        time.sleep(wait)
+    else:
+        raise RuntimeError(f"SerpApi request failed after retries: {last_error or response.reason}")
     if not response.ok:
         try:
             detail = response.json().get("error") or response.reason
