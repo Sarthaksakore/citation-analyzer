@@ -7,7 +7,7 @@ import re
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import requests
 from dotenv import load_dotenv
@@ -18,7 +18,7 @@ SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
 GOOGLE_SCHOLAR_AUTHOR_ID = os.getenv("GOOGLE_SCHOLAR_AUTHOR_ID", "")
 GOOGLE_SCHOLAR_AUTHOR_NAME = os.getenv("GOOGLE_SCHOLAR_AUTHOR_NAME", "")
 SERPAPI_URL = "https://serpapi.com/search.json"
-SCHOLAR_CITATION_WORKERS = max(1, int(os.getenv("SCHOLAR_CITATION_WORKERS", "4")))
+SCHOLAR_CITATION_WORKERS = max(1, int(os.getenv("SCHOLAR_CITATION_WORKERS", "12")))
 SCHOLAR_MAX_PAGES = max(1, int(os.getenv("SCHOLAR_MAX_PAGES", "1000")))
 logger = logging.getLogger(__name__)
 
@@ -59,16 +59,19 @@ def _fetch_all_results(
     params: Dict[str, Any],
     result_key: str,
     page_size: int,
+    first_page: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch every page exposed by SerpApi's pagination metadata."""
     results: List[Dict[str, Any]] = []
     seen_keys = set()
+    page = first_page
     start = 0
-    for _ in range(SCHOLAR_MAX_PAGES):
-        page_params = {**params, "start": start}
-        if page_size:
-            page_params["num"] = page_size
-        page = _request(page_params)
+    for page_number in range(SCHOLAR_MAX_PAGES):
+        if page is None:
+            page_params = {**params, "start": start}
+            if page_size:
+                page_params["num"] = page_size
+            page = _request(page_params)
         page_results = page.get(result_key) or []
         if not page_results:
             break
@@ -84,6 +87,7 @@ def _fetch_all_results(
         if not next_page or not new_results:
             break
         start += len(page_results)
+        page = None
     else:
         logger.warning("Google Scholar pagination stopped at %d pages", SCHOLAR_MAX_PAGES)
     return results
@@ -152,6 +156,7 @@ def _get_author_profile(researcher_name: str, author_id: str) -> Dict[str, Any]:
         {"engine": "google_scholar_author", "author_id": author_id},
         "articles",
         page_size=20,
+        first_page=details,
     )
     profile_details = first_details
     author = profile_details.get("author") or {}
@@ -215,9 +220,20 @@ def _get_author_profile(researcher_name: str, author_id: str) -> Dict[str, Any]:
             })
         return citing_papers
 
+    articles_by_cites_id: Dict[str, Dict[str, Any]] = {}
+    articles_without_cites_id: List[Dict[str, Any]] = []
+    for article in articles:
+        cites_id = article.get("cites_id")
+        if cites_id:
+            articles_by_cites_id.setdefault(cites_id, article)
+        else:
+            articles_without_cites_id.append(article)
+
     citing_papers: List[Dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=SCHOLAR_CITATION_WORKERS) as executor:
-        for papers in executor.map(fetch_citing_papers, articles):
+        for papers in executor.map(fetch_citing_papers, articles_by_cites_id.values()):
+            citing_papers.extend(papers)
+        for papers in executor.map(fetch_citing_papers, articles_without_cites_id):
             citing_papers.extend(papers)
 
     raw_citing_paper_count = len(citing_papers)
