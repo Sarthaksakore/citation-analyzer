@@ -160,13 +160,23 @@ def _get_with_retry(
 
             # Rate-limited or server overload — back off and retry
             if resp.status_code in (429, 503):
-                retry_after = int(resp.headers.get("Retry-After", 0))
+                try:
+                    retry_after = max(0.0, float(resp.headers.get("Retry-After", 0)))
+                except (TypeError, ValueError):
+                    retry_after = 0.0
                 wait = max(retry_after, min(BACKOFF_BASE ** (attempt + 1), 30.0))
+                if retry_after > 30.0:
+                    logger.warning(
+                        "[%s] HTTP %d — provider requested %.1fs; failing fast instead",
+                        source_label, resp.status_code, retry_after,
+                    )
+                    return None
                 logger.warning(
                     "[%s] HTTP %d — backing off %.1fs (attempt %d/%d): %s",
                     source_label, resp.status_code, wait, attempt + 1, retries_limit, url,
                 )
-                time.sleep(wait)
+                if attempt < retries_limit:
+                    time.sleep(wait)
                 continue
 
             resp.raise_for_status()
