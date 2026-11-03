@@ -289,19 +289,15 @@ def _get_author_profile(researcher_name: str, author_id: str) -> Dict[str, Any]:
         }
 
     articles_by_cites_id: Dict[str, Dict[str, Any]] = {}
-    articles_without_cites_id: List[Dict[str, Any]] = []
     for article in articles:
         cites_id = article.get("cites_id")
-        if cites_id:
+        if cites_id and article.get("cited_by", 0) > 0:
             articles_by_cites_id.setdefault(cites_id, article)
-        else:
-            articles_without_cites_id.append(article)
 
     citing_papers: List[Dict[str, Any]] = []
     cluster_results = []
     with ThreadPoolExecutor(max_workers=SCHOLAR_CITATION_WORKERS) as executor:
         cluster_results.extend(executor.map(fetch_citing_papers, articles_by_cites_id.values()))
-        cluster_results.extend(executor.map(fetch_citing_papers, articles_without_cites_id))
     for result in cluster_results:
         citing_papers.extend(result["papers"])
 
@@ -336,7 +332,11 @@ def _get_author_profile(researcher_name: str, author_id: str) -> Dict[str, Any]:
         "citing_paper_count": len(citing_papers),
         "raw_citing_paper_count": raw_citing_paper_count,
         "citing_paper_fetch": {
-            "clusters_requested": len(articles),
+            "clusters_requested": len(articles_by_cites_id) + len(articles_without_cites_id),
+            "clusters_skipped_zero_citations": sum(
+                not article.get("cites_id") or article.get("cited_by", 0) <= 0
+                for article in articles
+            ),
             "clusters_with_cites_id": len(articles_by_cites_id),
             "clusters_succeeded": sum(result["error"] is None for result in cluster_results),
             "clusters_failed": sum(result["error"] is not None for result in cluster_results),
