@@ -26,6 +26,7 @@ SCHOLAR_MAX_PAGES = max(1, int(os.getenv("SCHOLAR_MAX_PAGES", "1000")))
 SCHOLAR_CACHE_TTL_SECONDS = max(0.0, float(os.getenv("SCHOLAR_CACHE_TTL_SECONDS", "900")))
 _request_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
 _request_cache_lock = threading.Lock()
+_serpapi_quota_exhausted = threading.Event()
 logger = logging.getLogger(__name__)
 
 
@@ -36,6 +37,8 @@ def _name_score(query: str, candidate: str) -> float:
 
 
 def _request(params: Dict[str, Any]) -> Dict[str, Any]:
+    if _serpapi_quota_exhausted.is_set():
+        raise RuntimeError("SerpApi search quota is exhausted")
     cache_key = json.dumps(params, sort_keys=True, default=str)
     if SCHOLAR_CACHE_TTL_SECONDS:
         with _request_cache_lock:
@@ -58,6 +61,13 @@ def _request(params: Dict[str, Any]) -> Dict[str, Any]:
             continue
         if response.status_code != 429:
             break
+        try:
+            error_detail = str(response.json().get("error") or "").lower()
+        except ValueError:
+            error_detail = response.text.lower()
+        if "run out of searches" in error_detail or "searches left" in error_detail:
+            _serpapi_quota_exhausted.set()
+            raise RuntimeError("SerpApi search quota is exhausted")
         retry_after = response.headers.get("Retry-After")
         try:
             wait = float(retry_after) if retry_after else min(2 ** (attempt + 1), 30)
