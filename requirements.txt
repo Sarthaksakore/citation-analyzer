@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+requests
+rapidfuzz
+pandas
+scikit-learn
+pydantic
+sqlalchemy
+python-dotenv
+slowapi
+bleach
+aiohttp
+httpx
+pytest
+pytest-asyncio
+
+
